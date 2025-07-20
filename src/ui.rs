@@ -6,13 +6,11 @@ pub struct App {
     recorder: Arc<MacroRecorder>,
     player: Option<Arc<MacroPlayer>>,
     repeat_count: u32,
-    // 添加焦点状态跟踪
     ui_has_focus: bool,
 }
 
 impl App {
     pub fn new() -> Self {
-        // 直接创建录制器实例
         let recorder = Arc::new(MacroRecorder::new());
         Self {
             recorder,
@@ -24,12 +22,6 @@ impl App {
 
     pub fn get_recorder(&self) -> Arc<MacroRecorder> {
         self.recorder.clone()
-    }
-
-    pub fn configure_fonts(_ctx: &egui::Context) {
-        // 不进行任何字体配置，让egui使用系统默认字体
-        // 在macOS上，系统默认字体通常支持中文显示
-        // 这样可以避免字体找不到的问题
     }
 }
 
@@ -62,7 +54,6 @@ impl eframe::App for App {
                     {
                         if is_recording {
                             self.recorder.stop_recording();
-                            // Create a new MacroPlayer with the recorded events
                             let events = self.recorder.get_events();
                             if !events.is_empty() {
                                 self.player = Some(Arc::new(MacroPlayer::new(events)));
@@ -139,13 +130,6 @@ impl eframe::App for App {
             ui.group(|ui| {
                 ui.label("播放控制");
                 ui.add_enabled_ui(!is_recording, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("重复次数:");
-                        ui.add(
-                            egui::DragValue::new(&mut self.repeat_count).speed(0.1).range(1..=100),
-                        );
-                    });
-
                     if let Some(player) = &self.player {
                         ui.horizontal(|ui| {
                             // 播放一次
@@ -153,7 +137,7 @@ impl eframe::App for App {
                                 .button(if is_playing {
                                     "⏹ 停止播放"
                                 } else {
-                                    "▶ 播放一次"
+                                    "▶ 播放 1 次"
                                 })
                                 .clicked()
                             {
@@ -169,7 +153,7 @@ impl eframe::App for App {
                                 .button(if is_playing {
                                     "⏹ 停止播放"
                                 } else {
-                                    "▶ 播放宏"
+                                    "▶ 播放"
                                 })
                                 .clicked()
                             {
@@ -179,6 +163,16 @@ impl eframe::App for App {
                                     player.start_playing(self.repeat_count);
                                 }
                             }
+
+                            ui.horizontal(|ui| {
+                                // 播放次数
+                                ui.add(
+                                    egui::DragValue::new(&mut self.repeat_count)
+                                        .speed(1)
+                                        .range(1..=10000),
+                                );
+                                ui.label("次");
+                            });
 
                             if is_playing {
                                 ui.label("▶ 播放中...");

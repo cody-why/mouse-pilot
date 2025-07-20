@@ -1,7 +1,7 @@
 #![allow(clippy::new_without_default)]
 use anyhow::Result;
 
-use mousepilot::ui::App;
+use mousepilot::{font::load_default_font, ui::App};
 
 fn main() -> Result<()> {
     env_logger::init();
@@ -14,7 +14,7 @@ fn main() -> Result<()> {
         native_options,
         Box::new(|cc| -> Result<Box<dyn eframe::App>, Box<dyn std::error::Error + Send + Sync>> {
             // 配置字体以支持中文显示
-            App::configure_fonts(&cc.egui_ctx);
+            load_default_font(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )
