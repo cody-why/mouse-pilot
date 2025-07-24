@@ -1,27 +1,34 @@
 use anyhow::Result;
 use autopilot::mouse;
+use log::debug;
+use parking_lot::Mutex;
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
+    thread::JoinHandle,
     time::Duration,
 };
 
-use crate::event::*;
+use crate::{event::*, macro_manager::SavedMacro};
 
+// 新增：支持顺序播放多个宏的播放器
+#[derive(Default)]
 pub struct MacroPlayer {
-    events: Vec<MacroEvent>,
+    macros: Vec<SavedMacro>,
     is_playing: Arc<AtomicBool>,
-    play_handle: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    play_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    interval_ms: u64,
 }
 
 impl MacroPlayer {
-    pub fn new(events: Vec<MacroEvent>) -> Self {
+    pub fn new(macros: Vec<SavedMacro>, interval_ms: u64) -> Self {
         Self {
-            events,
+            macros,
             is_playing: Arc::new(AtomicBool::new(false)),
             play_handle: Arc::new(Mutex::new(None)),
+            interval_ms,
         }
     }
 
@@ -30,97 +37,111 @@ impl MacroPlayer {
     }
 
     pub fn stop(&self) {
+        if !self.is_playing.load(Ordering::SeqCst) {
+            return;
+        }
         self.is_playing.store(false, Ordering::SeqCst);
 
-        // 清理播放线程句柄
-        if let Some(handle) = self.play_handle.lock().unwrap().take() {
-            // std::thread::JoinHandle 没有 abort 方法，只能等待线程自然结束
+        if let Some(handle) = self.play_handle.lock().take() {
             let _ = handle.join();
         }
     }
 
-    pub fn start_playing(&self, repeat_count: u32) {
+    pub fn start_playing(&self) {
+        self.start_playing_with_repeat(1);
+    }
+
+    pub fn start_playing_with_repeat(&self, repeat_count: u32) {
         if self.is_playing.load(Ordering::SeqCst) {
             return;
         }
 
         let player = self.clone();
         let handle = std::thread::spawn(move || {
-            if let Err(e) = player.play_sync(repeat_count) {
-                eprintln!("Error playing macro: {e}");
+            if let Err(e) = player.play_sync_with_repeat(repeat_count) {
+                debug!("Error playing multi-macro: {e}");
             }
         });
 
-        *self.play_handle.lock().unwrap() = Some(handle);
+        *self.play_handle.lock() = Some(handle);
     }
 
-    fn play_sync(&self, repeat_count: u32) -> Result<()> {
+    fn play_sync_with_repeat(&self, repeat_count: u32) -> Result<()> {
         self.is_playing.store(true, Ordering::SeqCst);
 
-        for _ in 0..repeat_count {
+        for repeat_index in 0..repeat_count {
             if !self.is_playing.load(Ordering::SeqCst) {
                 break;
             }
 
-            let mut last_timestamp = 0;
-            for event in &self.events {
+            debug!("开始第 {} 次播放", repeat_index + 1);
+
+            for (i, macro_) in self.macros.iter().enumerate() {
                 if !self.is_playing.load(Ordering::SeqCst) {
                     break;
                 }
 
-                let delay = event.timestamp - last_timestamp;
-                std::thread::sleep(Duration::from_millis(delay as u64));
-                last_timestamp = event.timestamp;
+                debug!("Playing macro: {}", macro_.name);
 
-                match &event.event_type {
-                    MacroEventType::MouseMove { x, y } => {
-                        // 使用 autopilot 进行鼠标移动
-                        let _ =
-                            mouse::move_to(autopilot::geometry::Point::new(*x as f64, *y as f64));
-                    },
-                    MacroEventType::MouseClick {
-                        button: _,
-                        pressed,
-                        x: _,
-                        y: _,
-                    } => {
-                        // 使用 autopilot 进行鼠标点击
-                        if *pressed {
-                            mouse::toggle(mouse::Button::Left, true);
-                        } else {
-                            mouse::toggle(mouse::Button::Left, false);
-                        }
-                    },
-                    MacroEventType::KeyPress { key } => {
-                        // 使用 autopilot 进行按键
-                        eprintln!("Key press: {key}");
-                    },
-                    MacroEventType::KeyRelease { key } => {
-                        eprintln!("Key release: {key}");
-                    },
-                    MacroEventType::ImageFind {
-                        image_path,
-                        confidence: _,
-                        timeout: _,
-                    } => {
-                        // 简化的图像识别功能
-                        eprintln!("Looking for image: {image_path}");
-                        // 这里可以添加实际的图像识别逻辑
-                    },
-                    MacroEventType::WaitForImage {
-                        image_path,
-                        confidence: _,
-                        timeout,
-                    } => {
-                        // 简化的等待图像功能
-                        eprintln!("Waiting for image: {image_path} (timeout: {timeout}ms)");
-                        std::thread::sleep(Duration::from_millis(*timeout));
-                    },
-                    MacroEventType::Screenshot { path } => {
-                        // 简化的截图功能
-                        eprintln!("Taking screenshot: {path}");
-                        // 这里可以添加实际的截图逻辑
-                    },
+                let mut last_timestamp = 0;
+                for event in &macro_.events {
+                    if !self.is_playing.load(Ordering::SeqCst) {
+                        break;
+                    }
+
+                    let delay = event.timestamp - last_timestamp;
+                    std::thread::sleep(Duration::from_millis(delay as u64));
+                    last_timestamp = event.timestamp;
+
+                    match &event.event_type {
+                        MacroEventType::MouseMove { x, y } => {
+                            let _ = mouse::move_to(autopilot::geometry::Point::new(
+                                *x as f64, *y as f64,
+                            ));
+                        },
+                        MacroEventType::MouseClick {
+                            button,
+                            pressed,
+                            // x: _,
+                            // y: _,
+                        } => {
+                            // debug!("Mouse click: {button:?} {pressed}");
+
+                            let button = match *button {
+                                Button::Left => mouse::Button::Left,
+                                Button::Right => mouse::Button::Right,
+                                Button::Middle => mouse::Button::Middle,
+                            };
+                            mouse::toggle(button, *pressed);
+                        },
+                        MacroEventType::KeyPress { key } => {
+                            debug!("Key press: {key}");
+                        },
+                        MacroEventType::KeyRelease { key } => {
+                            debug!("Key release: {key}");
+                        },
+                        MacroEventType::ImageFind {
+                            image_path,
+                            confidence: _,
+                            timeout: _,
+                        } => {
+                            debug!("Looking for image: {image_path}");
+                        },
+
+                        MacroEventType::Delay { duration_ms } => {
+                            debug!("Delay: {duration_ms}ms");
+                            std::thread::sleep(Duration::from_millis(*duration_ms));
+                        },
+                    }
+                }
+
+                // 在宏之间添加间隔（除了最后一个宏）
+                if i < self.macros.len() - 1 && self.interval_ms > 0 {
+                    if !self.is_playing.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    debug!("Waiting {}ms before next macro...", self.interval_ms);
+                    std::thread::sleep(Duration::from_millis(self.interval_ms));
                 }
             }
         }
@@ -133,9 +154,10 @@ impl MacroPlayer {
 impl Clone for MacroPlayer {
     fn clone(&self) -> Self {
         Self {
-            events: self.events.clone(),
+            macros: self.macros.clone(),
             is_playing: self.is_playing.clone(),
             play_handle: Arc::new(Mutex::new(None)),
+            interval_ms: self.interval_ms,
         }
     }
 }

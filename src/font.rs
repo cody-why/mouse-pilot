@@ -11,8 +11,8 @@ pub fn load_default_font(ctx: &egui::Context) {
 
 #[allow(unused)]
 fn load_macos_font(ctx: &egui::Context) {
-    let font_path = "/System/Library/Fonts/STHeiti Light.ttc";
-
+    // let font_path = "/System/Library/Fonts/STHeiti Light.ttc";
+    let font_path = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf";
     load_font(ctx, font_path);
 }
 

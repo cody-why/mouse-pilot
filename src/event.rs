@@ -13,10 +13,10 @@ pub enum MacroEventType {
         y: i32,
     },
     MouseClick {
-        button: String,
+        button: Button,
         pressed: bool,
-        x: i32,
-        y: i32,
+        // x: i32,
+        // y: i32,
     },
     KeyPress {
         key: String,
@@ -30,12 +30,27 @@ pub enum MacroEventType {
         confidence: f64,
         timeout: u64,
     },
-    WaitForImage {
-        image_path: String,
-        confidence: f64,
-        timeout: u64,
+
+    // 新增延时事件
+    Delay {
+        duration_ms: u64,
     },
-    Screenshot {
-        path: String,
-    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Button {
+    Left,
+    Middle,
+    Right,
+}
+
+impl From<usize> for Button {
+    fn from(button: usize) -> Self {
+        match button {
+            1 => Button::Left,
+            2 => Button::Right,
+            3 => Button::Middle,
+            _ => Button::Left,
+        }
+    }
 }
