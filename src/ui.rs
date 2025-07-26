@@ -6,16 +6,11 @@ use crate::hotkey::*;
 use crate::state::AppState;
 
 pub struct App {
-    // recorder: Arc<MacroRecorder>,
-    // player: Option<Arc<MultiMacroPlayer>>,
-    // macro_manager: Arc<MacroManager>,
     state: Arc<AppState>,
     ui_has_focus: bool,
     editing_macro_name: Option<String>,
     new_macro_name: String,
     deleting_macro: Option<String>,
-    // 快捷键相关
-    shortcuts: Vec<Shortcut>,
     show_shortcuts_help: bool,
     // 全局快捷键相关
     global_listener: Option<GlobalHotkeyListener>,
@@ -26,39 +21,10 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        // 初始化快捷键
-        let shortcuts = vec![
-            Shortcut::new("start_recording", egui::Key::F5, false, false, false, "开始录制", false),
-            Shortcut::new("stop_recording", egui::Key::F4, false, false, false, "停止录制", false),
-            Shortcut::new("play_once", egui::Key::F7, false, false, false, "播放一次", false),
-            Shortcut::new("play_multiple", egui::Key::F8, false, false, false, "播放多次", false),
-            Shortcut::new("stop_playback", egui::Key::F9, false, false, false, "停止播放", false),
-            Shortcut::new(
-                "clear_recording",
-                egui::Key::Delete,
-                true,
-                false,
-                false,
-                "清空录制",
-                false,
-            ),
-            Shortcut::new("select_all_macros", egui::Key::A, true, false, false, "全选宏", true),
-            Shortcut::new(
-                "deselect_all_macros",
-                egui::Key::D,
-                true,
-                false,
-                false,
-                "取消全选",
-                true,
-            ),
-            Shortcut::new("toggle_help", egui::Key::F1, false, false, false, "显示/隐藏帮助", true),
-        ];
+        let state = Arc::new(AppState::new());
 
         // 创建全局快捷键监听器
-        let global_listener = GlobalHotkeyListener::new(shortcuts.clone());
-
-        let state = Arc::new(AppState::new());
+        let global_listener = GlobalHotkeyListener::new();
 
         let app = Self {
             state: state.clone(),
@@ -66,7 +32,6 @@ impl App {
             editing_macro_name: None,
             new_macro_name: String::new(),
             deleting_macro: None,
-            shortcuts,
             show_shortcuts_help: false,
             global_listener: Some(global_listener),
             delay_macro_ms: 1000,
@@ -114,7 +79,7 @@ impl eframe::App for App {
         if self.ui_has_focus {
             let mut shortcut_to_execute = None;
             ctx.input(|i| {
-                for shortcut in &self.shortcuts {
+                for shortcut in self.state.shortcuts.iter() {
                     if i.key_pressed(shortcut.key) && shortcut.matches(shortcut.key, &i.modifiers) {
                         shortcut_to_execute = Some(shortcut.name.clone());
                     }
@@ -124,6 +89,10 @@ impl eframe::App for App {
             if let Some(name) = shortcut_to_execute {
                 self.execute_shortcut(&name);
             }
+        }
+        if self.state.recorder.is_recording() || self.state.is_playing() {
+            // 强制刷新UI
+            ctx.request_repaint();
         }
 
         // 状态信息区域始终在底部，且要在所有面板之前调用
@@ -302,10 +271,6 @@ impl App {
                         }
                     }
                 }
-
-                if is_recording {
-                    ui.label("🔴 录制中...");
-                }
             });
 
             // 手动录制控制
@@ -376,11 +341,8 @@ impl App {
                 );
                 ui.label("名字:");
                 // 让输入框自适应剩余宽度
-                let text_edit_width = ui.available_width() - 150.0; // 预留按钮宽度
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.delay_macro_name)
-                        .desired_width(text_edit_width.max(40.0)),
-                );
+                // let text_edit_width = ui.available_width() - 150.0; // 预留按钮宽度
+                ui.add(egui::TextEdit::singleline(&mut self.delay_macro_name).desired_width(50.0));
 
                 if ui.button("➕ 添加").clicked() && !self.delay_macro_name.trim().is_empty() {
                     let macro_name = format!(
@@ -401,12 +363,50 @@ impl App {
             });
         });
 
+        let selected_count = self.state.get_selected_count();
+        ui.group(|ui| {
+            ui.separator();
+            ui.label(format!("已选择: {selected_count}"));
+            // 全选按钮, 清空按钮
+            ui.horizontal(|ui| {
+                if ui.button("全选").clicked() {
+                    self.state.set_selected_macros(
+                        self.state
+                            .macro_manager
+                            .get_all_macros()
+                            .iter()
+                            .map(|m| m.name.clone())
+                            .collect(),
+                    );
+                }
+                if ui.button("清空").clicked() {
+                    self.state.clear_selected_macros();
+                }
+            });
+        });
+
         // 播放控制区域
         ui.group(|ui| {
             ui.separator();
             ui.label("播放控制");
             ui.add_enabled_ui(!is_recording, |ui| {
-                if !self.state.get_selected_macros().is_empty() {
+                if selected_count > 0 {
+                    // 宏间隔设置
+                    ui.horizontal(|ui| {
+                        ui.label("宏间隔:");
+                        let mut interval = self.state.get_macro_interval_ms();
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut interval)
+                                    .speed(100)
+                                    .range(0..=600000)
+                                    .suffix("ms"),
+                            )
+                            .changed()
+                        {
+                            self.state.set_macro_interval_ms(interval);
+                        }
+                    });
                     ui.horizontal(|ui| {
                         // 播放一次
                         if ui
@@ -457,35 +457,10 @@ impl App {
                             ui.label("次");
                         });
                     });
-                    if is_playing {
-                        ui.label("▶ 播放中...");
-                    }
                 } else {
                     ui.label("请先选择要播放的宏");
                 }
             });
-
-            // 宏间隔设置
-            if !self.state.get_selected_macros().is_empty() {
-                ui.separator();
-                ui.label(format!("已选择 {} 个宏", self.state.get_selected_macros().len()));
-
-                ui.horizontal(|ui| {
-                    ui.label("宏间隔:");
-                    let mut interval = self.state.get_macro_interval_ms();
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut interval)
-                                .speed(100)
-                                .range(0..=600000)
-                                .suffix("ms"),
-                        )
-                        .changed()
-                    {
-                        self.state.set_macro_interval_ms(interval);
-                    }
-                });
-            }
         });
     }
 
@@ -493,18 +468,54 @@ impl App {
     fn render_status_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let events_count = self.state.recorder.get_events_count();
-                ui.label(format!("录制事件: {events_count}"));
+                let total_macros = self.state.macro_manager.get_all_macros().len();
+                ui.label(format!("宏数量: {total_macros}"));
 
                 ui.separator();
 
-                let total_macros = self.state.macro_manager.get_all_macros().len();
-                ui.label(format!("已保存宏: {total_macros}"));
+                // 录制状态
+                if self.state.recorder.is_recording() {
+                    let time_elapsed = self.state.recorder.get_time_elapsed();
+                    let events_count = self.state.recorder.get_events_count();
+                    ui.label(format!(
+                        "🔴 录制中... {:.1}s | 事件: {events_count}",
+                        time_elapsed as f64 / 1000.0
+                    ));
+                }
+
+                ui.separator();
+
+                // 播放状态
+                let status_text = if self.state.is_playing() {
+                    let playback_status = self.state.get_player_playback_status();
+                    let progress = playback_status.get_progress();
+                    let mut s = format!("▶ {progress:.0}%");
+                    if playback_status.total_repeats > 1 {
+                        s += &format!(
+                            " | {}/{} 次",
+                            playback_status.current_repeat, playback_status.total_repeats
+                        );
+                    }
+
+                    if !playback_status.current_macro_name.is_empty() {
+                        s += &format!(
+                            " | {} | {}/{}",
+                            playback_status.current_macro_name,
+                            playback_status.current_macro_index + 1,
+                            playback_status.total_macros
+                        );
+                    }
+
+                    s
+                } else {
+                    String::from("⏹ 未播放")
+                };
+                ui.label(status_text);
 
                 ui.separator();
 
                 // 显示快捷键提示
-                ui.label("💡 按 F1 查看快捷键帮助");
+                ui.label("💡 F1 查看帮助");
             });
         });
     }
@@ -518,7 +529,7 @@ impl App {
                 ui.separator();
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    for shortcut in &self.shortcuts {
+                    for shortcut in self.state.shortcuts.iter() {
                         ui.horizontal(|ui| {
                             ui.label(&shortcut.description);
                             ui.with_layout(

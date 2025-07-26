@@ -114,21 +114,19 @@ impl Shortcut {
 pub struct GlobalHotkeyListener {
     device_state: DeviceState,
     running: Arc<AtomicBool>,
-    shortcuts: Vec<Shortcut>,
 }
 
 impl GlobalHotkeyListener {
-    pub fn new(shortcuts: Vec<Shortcut>) -> Self {
+    pub fn new() -> Self {
         Self {
             device_state: DeviceState::new(),
             running: Arc::new(AtomicBool::new(true)),
-            shortcuts,
         }
     }
 
     pub fn start(&self, state: Arc<AppState>) {
         let running = self.running.clone();
-        let shortcuts = self.shortcuts.clone();
+        let shortcuts = state.shortcuts.clone();
         let device_state = self.device_state.clone();
         std::thread::spawn(move || {
             let mut last_keys = Vec::new();
@@ -137,7 +135,7 @@ impl GlobalHotkeyListener {
                 for key in &keys {
                     if !last_keys.contains(key) {
                         if let Some(key) = &Shortcut::to_key(*key) {
-                            for shortcut in &shortcuts {
+                            for shortcut in shortcuts.iter() {
                                 if shortcut.matches_keycode(key, &keys) {
                                     // 直接处理
                                     ShortcutProcessor::execute_shortcut(&shortcut.name, &state);

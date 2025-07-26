@@ -1,3 +1,5 @@
+run:
+	cargo run
 r:
 	cargo build --release
 r-win:

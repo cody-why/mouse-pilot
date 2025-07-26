@@ -1,5 +1,6 @@
 use anyhow::Result;
-use device_query::{DeviceQuery, DeviceState, MouseState};
+use device_query::{DeviceQuery, DeviceState, Keycode, MouseState};
+use eframe::egui;
 use parking_lot::Mutex;
 use std::{
     sync::{
@@ -9,26 +10,28 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::event::*;
+use crate::{event::*, hotkey::Shortcut};
 
 #[derive(Debug, Clone)]
 pub struct MacroRecorder {
     events: Arc<Mutex<Vec<MacroEvent>>>,
     is_recording: Arc<AtomicBool>,
     start_time: Arc<Mutex<Option<Instant>>>,
-    last_mouse_pos: Arc<Mutex<(i32, i32)>>,
+    // last_mouse_pos: Arc<Mutex<(i32, i32)>>,
     // 添加设备状态监听
     device_state: Arc<Mutex<DeviceState>>,
+    shortcuts: Arc<Vec<Shortcut>>,
 }
 
 impl MacroRecorder {
-    pub fn new() -> Self {
+    pub fn new(shortcuts: Arc<Vec<Shortcut>>) -> Self {
         Self {
             events: Arc::new(Mutex::new(Vec::new())),
             is_recording: Arc::new(AtomicBool::new(false)),
             start_time: Arc::new(Mutex::new(None)),
-            last_mouse_pos: Arc::new(Mutex::new((0, 0))),
+            // last_mouse_pos: Arc::new(Mutex::new((0, 0))),
             device_state: Arc::new(Mutex::new(DeviceState::new())),
+            shortcuts,
         }
     }
 
@@ -55,6 +58,8 @@ impl MacroRecorder {
                     break;
                 }
 
+                // const MIN_DIST: i32 = 8;
+                // let lastpos = *recorder.last_mouse_pos.lock();
                 // 监听鼠标事件
                 let mouse_state = device_state.lock().get_mouse();
                 if mouse_state.coords != last_mouse_state.coords {
@@ -63,6 +68,9 @@ impl MacroRecorder {
 
                 // 监听鼠标点击
                 if mouse_state.button_pressed != last_mouse_state.button_pressed {
+                    // if mouse_state.coords != lastpos {
+                    //     recorder.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
+                    // }
                     for (i, pressed) in mouse_state.button_pressed.iter().enumerate() {
                         if *pressed {
                             recorder.add_mouse_click(
@@ -81,24 +89,35 @@ impl MacroRecorder {
                         }
                     }
                 }
+                // } else {
+                //     let (cur_x, cur_y) = mouse_state.coords;
+                //     if (cur_x - lastpos.0).abs() >= MIN_DIST
+                //         || (cur_y - lastpos.1).abs() >= MIN_DIST
+                //     {
+                //         recorder.add_mouse_move(cur_x, cur_y);
+                //     }
+                // }
 
                 // 监听键盘事件
                 let keys = device_state.lock().get_keys();
-                for key in &keys {
-                    if !last_keys.contains(key) {
-                        recorder.add_key_event(&format!("{key:?}"), true);
+                // 排除快捷键
+                if !recorder.is_hotkey(&keys) {
+                    for key in &keys {
+                        if !last_keys.contains(key) {
+                            recorder.add_key_event(&format!("{key:?}"), true);
+                        }
                     }
-                }
-                for key in &last_keys {
-                    if !keys.contains(key) {
-                        recorder.add_key_event(&format!("{key:?}"), false);
+                    for key in &last_keys {
+                        if !keys.contains(key) {
+                            recorder.add_key_event(&format!("{key:?}"), false);
+                        }
                     }
                 }
 
                 last_mouse_state = mouse_state;
                 last_keys = keys;
 
-                std::thread::sleep(Duration::from_millis(15));
+                std::thread::sleep(Duration::from_millis(10));
             }
         });
 
@@ -116,6 +135,12 @@ impl MacroRecorder {
 
     pub fn is_recording(&self) -> bool {
         self.is_recording.load(Ordering::SeqCst)
+    }
+
+    pub fn get_time_elapsed(&self) -> u64 {
+        (*self.start_time.lock())
+            .map(|time| time.elapsed().as_millis() as u64)
+            .unwrap_or(0)
     }
 
     pub fn get_events(&self) -> Vec<MacroEvent> {
@@ -138,7 +163,7 @@ impl MacroRecorder {
         };
 
         // 更新最后鼠标位置
-        *self.last_mouse_pos.lock() = (x, y);
+        // *self.last_mouse_pos.lock() = (x, y);
 
         let macro_event = MacroEvent {
             event_type: MacroEventType::MouseMove { x, y },
@@ -146,6 +171,7 @@ impl MacroRecorder {
         };
 
         self.events.lock().push(macro_event);
+        // self.start_time.lock().replace(Instant::now());
     }
 
     pub fn add_mouse_click(&self, button: Button, pressed: bool) {
@@ -169,6 +195,20 @@ impl MacroRecorder {
         };
 
         self.events.lock().push(macro_event);
+        // self.start_time.lock().replace(Instant::now());
+    }
+
+    fn is_hotkey(&self, keys: &[Keycode]) -> bool {
+        for key in keys {
+            if let Some(key) = egui::Key::from_name(&key.to_string()) {
+                for shortcut in self.shortcuts.iter() {
+                    if shortcut.key == key {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     pub fn add_key_event(&self, key: &str, pressed: bool) {
@@ -195,6 +235,7 @@ impl MacroRecorder {
         };
 
         self.events.lock().push(macro_event);
+        // self.start_time.lock().replace(Instant::now());
     }
 
     // 新增图像识别相关方法
