@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect x="0" y="0" width="512" height="512" fill="#1E3A8A"/>
+  
+  <!-- Mouse cursor shape for "M" -->
+  <g transform="translate(100, 180)">
+    <!-- Main cursor body -->
+    <path d="M 0 0 L 120 0 L 90 30 L 60 30 L 30 60 L 0 60 Z" fill="#FFFFFF"/>
+    <!-- Cursor arrow -->
+    <path d="M 0 60 L 30 60 L 60 90 L 90 60 L 120 60 L 90 30 L 60 30 L 30 60 L 0 60 Z" fill="#FFFFFF"/>
+  </g>
+  
+  <!-- Mouse cursor shape for "P" -->
+  <g transform="translate(250, 180)">
+    <!-- Main cursor body -->
+    <path d="M 0 0 L 120 0 L 90 30 L 60 30 L 30 60 L 0 60 Z" fill="#FFFFFF"/>
+    <!-- Cursor arrow -->
+    <path d="M 0 60 L 30 60 L 60 90 L 90 60 L 120 60 L 90 30 L 60 30 L 30 60 L 0 60 Z" fill="#FFFFFF"/>
+  </g>
+  
+  <!-- Recording indicator -->
+  <circle cx="450" cy="160" r="30" fill="#FF3B30"/>
+  <circle cx="450" cy="160" r="30" fill="none" stroke="#FF3B30" stroke-width="4" opacity="0.6"/>
+  
+  <!-- Recording waves -->
+  <circle cx="450" cy="160" r="50" fill="none" stroke="#FF3B30" stroke-width="4" opacity="0.4"/>
+  <circle cx="450" cy="160" r="70" fill="none" stroke="#FF3B30" stroke-width="3" opacity="0.3"/>
+</svg>

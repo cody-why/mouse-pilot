@@ -1,10 +1,13 @@
 run:
 	cargo run
-r:
-	cargo build --release
-r-win:
-	cargo build --release --target x86_64-pc-windows-gnu
-r-linux:
+win:
+	chmod +x scripts/build_windows.sh && ./scripts/build_windows.sh
+linux:
 	cargo build --release --target x86_64-unknown-linux-musl
+macos:
+	chmod +x scripts/build_macos.sh && ./scripts/build_macos.sh
 fix:
 	cargo fixit --clippy --allow-dirty
+
+svg2icon:
+	chmod +x scripts/create_icon.sh && ./scripts/create_icon.sh

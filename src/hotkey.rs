@@ -168,32 +168,28 @@ impl ShortcutProcessor {
                 if let Err(e) = state.recorder.start_recording() {
                     debug!("Failed to start recording: {e}");
                 }
+                state.repaint_ui_after_secs(0.5);
             },
-            "stop_recording" => {
+            "stop" => {
                 state.recorder.stop_recording();
+                state.stop_player();
             },
             "clear_recording" => {
                 state.recorder.clear_events();
             },
-            "stop_playback" => {
-                state.stop_player();
-            },
+
             "play_once" => {
-                let selected = state.get_selected_macros();
-                if !selected.is_empty() && !state.recorder.is_recording() {
-                    let interval = state.get_macro_interval_ms();
-                    state.play_selected_macros(&selected, 1, interval);
+                if !state.recorder.is_recording() {
+                    state.play_selected_macros(1);
                 }
             },
             "play_multiple" => {
-                let selected = state.get_selected_macros();
-                if !selected.is_empty() && !state.recorder.is_recording() {
+                if !state.recorder.is_recording() {
                     let repeat = state.get_repeat_count();
-                    let interval = state.get_macro_interval_ms();
-                    state.play_selected_macros(&selected, repeat, interval);
+                    state.play_selected_macros(repeat);
                 }
             },
-            "select_all_macros" | "deselect_all_macros" | "toggle_help" => {
+            "select_all_macros" | "deselect_all_macros" | "help" => {
                 // 需要UI状态，跳过
                 debug!("快捷键 '{shortcut_name}' 需要UI状态访问，暂时跳过");
             },

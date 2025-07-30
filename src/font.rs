@@ -19,7 +19,7 @@ impl std::fmt::Display for FontError {
 
 impl std::error::Error for FontError {}
 
-pub fn setup_chinese_fonts(ctx: &egui::Context) -> Result<(), FontError> {
+pub fn config_chinese_fonts(ctx: &egui::Context) -> Result<(), FontError> {
     let font_data = load_chinese_font()?;
     let mut fonts = egui::FontDefinitions::default();
 
@@ -86,8 +86,8 @@ fn load_windows_chinese_font() -> Result<egui::FontData, FontError> {
     ];
 
     for font_path in &font_paths {
-        if let Ok(font_data) = std::fs::read(font_path) {
-            return Ok(egui::FontData::from_owned(font_data));
+        if let Ok(font_data) = load_font(font_path) {
+            return Ok(font_data);
         }
     }
 
@@ -105,13 +105,24 @@ fn load_macos_chinese_font() -> Result<egui::FontData, FontError> {
         "/System/Library/Fonts/Apple LiGothic Medium.ttf", // Apple LiGothic (Traditional)
     ];
 
-    for font_path in &font_paths {
-        if let Ok(font_data) = std::fs::read(font_path) {
-            return Ok(egui::FontData::from_owned(font_data));
+    for font_path in font_paths {
+        if let Ok(font_data) = load_font(font_path) {
+            return Ok(font_data);
         }
     }
 
     Err(FontError::NotFound("No Chinese font found".to_string()))
+}
+
+#[inline]
+fn load_font(font_path: &str) -> Result<egui::FontData, FontError> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(font_path).map_err(FontError::ReadError)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut font_data = Vec::new();
+    reader.read_to_end(&mut font_data).map_err(FontError::ReadError)?;
+    Ok(egui::FontData::from_owned(font_data))
 }
 
 #[cfg(target_os = "linux")]
@@ -133,13 +144,13 @@ fn load_linux_chinese_font() -> Result<egui::FontData, FontError> {
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
     ];
 
-    for font_path in &font_paths {
-        if let Ok(font_data) = std::fs::read(font_path) {
-            return Ok(egui::FontData::from_owned(font_data));
+    for font_path in font_paths {
+        if let Ok(font_data) = load_font(font_path) {
+            return Ok(font_data);
         }
     }
 
-    Err(FontError::NotFound("No Chinese font found".to_string()))
+    Err(FontError::NotFound("Chinese font not found".to_string()))
 }
 
 fn load_chinese_font() -> Result<egui::FontData, FontError> {

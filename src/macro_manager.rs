@@ -1,10 +1,11 @@
 use crate::event::MacroEvent;
 
 use anyhow::Result;
+use autopilot::alert;
 use log::debug;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, path::Path, sync::Arc};
+use std::{collections::BTreeMap, fs, io::BufReader, path::Path, sync::Arc, thread};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedMacro {
@@ -14,32 +15,45 @@ pub struct SavedMacro {
     // pub updated_at: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MacroManager {
-    macros: Arc<Mutex<HashMap<String, SavedMacro>>>,
+    pub macros: Arc<RwLock<BTreeMap<String, SavedMacro>>>,
     storage_path: String,
 }
 
 impl MacroManager {
     pub fn new() -> Self {
-        let storage_path = "macros".to_string();
+        // 使用用户主目录下的应用程序数据目录
+        let storage_path = if let Some(home_dir) = dirs::home_dir() {
+            home_dir.join(".mousepilot").join("macros").to_string_lossy().to_string()
+        } else {
+            // 回退到当前目录
+            "macros".to_string()
+        };
+        debug!("storage_path: {storage_path}");
+
+        // alert::alert(&storage_path, Some("alert"), None, None);
 
         // 确保存储目录存在
         if !Path::new(&storage_path).exists() {
             if let Err(e) = fs::create_dir_all(&storage_path) {
                 debug!("Failed to create macros directory: {e}");
+                alert::alert(&e.to_string(), Some("alert"), None, None);
             }
         }
 
         let manager = Self {
-            macros: Arc::new(Mutex::new(HashMap::new())),
+            macros: Default::default(),
             storage_path,
         };
 
-        // 加载已保存的宏
-        if let Err(e) = manager.load_all_macros() {
-            debug!("Failed to load macros: {e}");
-        }
+        let manager_clone = manager.clone();
+        thread::spawn(move || {
+            // 加载已保存的宏
+            if let Err(e) = manager_clone.load_all_macros() {
+                debug!("Failed to load macros: {e}");
+            }
+        });
 
         manager
     }
@@ -60,7 +74,7 @@ impl MacroManager {
         let json = serde_json::to_string(&saved_macro)?;
         fs::write(file_path, json)?;
 
-        self.macros.lock().insert(name.to_string(), saved_macro);
+        self.macros.write().insert(name.to_string(), saved_macro);
         Ok(())
     }
 
@@ -71,11 +85,11 @@ impl MacroManager {
             return Ok(None);
         }
 
-        let content = fs::read(file_path)?;
-        let saved_macro: SavedMacro = serde_json::from_slice(&content)?;
+        let file = fs::File::open(file_path)?;
+        let saved_macro: SavedMacro = serde_json::from_reader(BufReader::new(file))?;
 
         // 更新内存中的宏
-        self.macros.lock().insert(name.to_string(), saved_macro.clone());
+        self.macros.write().insert(name.to_string(), saved_macro.clone());
 
         Ok(Some(saved_macro.events))
     }
@@ -87,7 +101,7 @@ impl MacroManager {
             fs::remove_file(file_path)?;
         }
 
-        self.macros.lock().remove(name);
+        self.macros.write().remove(name);
         Ok(())
     }
 
@@ -97,11 +111,11 @@ impl MacroManager {
 
         if Path::new(&old_path).exists() {
             fs::rename(old_path, &new_path)?;
-            let macro_data = self.macros.lock().remove(old_name);
+            let macro_data = self.macros.write().remove(old_name);
             if let Some(mut macro_data) = macro_data {
                 macro_data.name = new_name.to_string();
                 fs::write(new_path, serde_json::to_string(&macro_data)?)?;
-                self.macros.lock().insert(new_name.to_string(), macro_data);
+                self.macros.write().insert(new_name.to_string(), macro_data);
             }
         }
 
@@ -109,15 +123,19 @@ impl MacroManager {
     }
 
     pub fn get_all_macros(&self) -> Vec<SavedMacro> {
-        self.macros.lock().values().cloned().collect()
+        self.macros.read().values().cloned().collect()
+    }
+
+    pub fn get_macro_count(&self) -> usize {
+        self.macros.read().len()
     }
 
     pub fn get_macro_names(&self) -> Vec<String> {
-        self.macros.lock().keys().cloned().collect()
+        self.macros.read().keys().cloned().collect()
     }
 
     pub fn macro_exists(&self, name: &str) -> bool {
-        self.macros.lock().contains_key(name)
+        self.macros.read().contains_key(name)
     }
 
     fn load_all_macros(&self) -> Result<()> {
@@ -129,9 +147,9 @@ impl MacroManager {
 
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Ok(content) = fs::read(&path) {
-                        if let Ok(saved_macro) = serde_json::from_slice::<SavedMacro>(&content) {
-                            self.macros.lock().insert(name.to_string(), saved_macro);
+                    if let Ok(file) = fs::File::open(&path) {
+                        if let Ok(saved_macro) = serde_json::from_reader(BufReader::new(file)) {
+                            self.macros.write().insert(name.to_string(), saved_macro);
                         }
                     }
                 }
@@ -143,7 +161,7 @@ impl MacroManager {
 
     pub fn get_macros(&self, names: &[String]) -> Vec<SavedMacro> {
         self.macros
-            .lock()
+            .read()
             .values()
             .filter(|m| names.contains(&m.name))
             .cloned()

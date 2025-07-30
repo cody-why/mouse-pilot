@@ -1,5 +1,6 @@
 use eframe::egui;
 use log::debug;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::hotkey::*;
@@ -20,8 +21,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Self {
-        let state = Arc::new(AppState::new());
+    pub fn new(ctx: &egui::Context) -> Self {
+        let state = Arc::new(AppState::new(ctx));
 
         // 创建全局快捷键监听器
         let global_listener = GlobalHotkeyListener::new();
@@ -51,7 +52,7 @@ impl App {
         debug!("执行UI内快捷键: {shortcut_name}");
         match shortcut_name {
             "select_all_macros" => {
-                let all_macros: Vec<String> = self
+                let all_macros: BTreeSet<String> = self
                     .state
                     .macro_manager
                     .get_all_macros()
@@ -63,7 +64,7 @@ impl App {
             "deselect_all_macros" => {
                 self.state.clear_selected_macros();
             },
-            "toggle_help" => {
+            "help" => {
                 self.show_shortcuts_help = !self.show_shortcuts_help;
             },
             _ => {},
@@ -92,7 +93,7 @@ impl eframe::App for App {
         }
         if self.state.recorder.is_recording() || self.state.is_playing() {
             // 强制刷新UI
-            ctx.request_repaint();
+            ctx.request_repaint_after_secs(0.5);
         }
 
         // 状态信息区域始终在底部，且要在所有面板之前调用
@@ -177,25 +178,19 @@ impl App {
 
         // 宏列表
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let mut macros = self.state.macro_manager.get_all_macros();
-            macros.sort_by(|a, b| a.name.cmp(&b.name));
+            let macros = self.state.macro_manager.macros.read();
+            // macros.sort_by(|a, b| a.name.cmp(&b.name));
 
-            let selected_macros = self.state.get_selected_macros();
-
-            for macro_data in macros {
+            for macro_data in macros.values() {
                 ui.horizontal(|ui| {
-                    let mut is_selected = selected_macros.contains(&macro_data.name);
+                    let mut is_selected = self.state.is_selected(&macro_data.name);
 
                     if ui.checkbox(&mut is_selected, "").clicked() {
-                        let mut new_selected = self.state.get_selected_macros();
                         if is_selected {
-                            if !new_selected.contains(&macro_data.name) {
-                                new_selected.push(macro_data.name.clone());
-                            }
+                            self.state.add_selected_macros(&macro_data.name);
                         } else {
-                            new_selected.retain(|name| name != &macro_data.name);
+                            self.state.remove_selected_macros(&macro_data.name);
                         }
-                        self.state.set_selected_macros(new_selected);
                     }
 
                     ui.label(&macro_data.name);
@@ -304,7 +299,7 @@ impl App {
             }
 
             // 保存当前录制
-            if !self.state.recorder.get_events().is_empty() {
+            if self.state.recorder.get_event_count() > 0 {
                 ui.separator();
                 ui.label("保存录制");
                 ui.horizontal(|ui| {
@@ -332,15 +327,18 @@ impl App {
             ui.label("添加延时");
 
             ui.horizontal(|ui| {
-                ui.label("延时(毫秒):");
-                ui.add(
-                    egui::DragValue::new(&mut self.delay_macro_ms)
-                        .speed(100)
-                        .range(1..=600_000)
-                        .suffix("ms"),
-                );
+                ui.label("延时:");
+                ui.spacing_mut().item_spacing.x = 0.0;
+                if ui.add(egui::Button::new("-")).clicked() {
+                    self.delay_macro_ms = self.delay_macro_ms.saturating_sub(1000);
+                }
+                ui.add(egui::DragValue::new(&mut self.delay_macro_ms).speed(1000).suffix("ms"));
+                if ui.add(egui::Button::new("+")).clicked() {
+                    self.delay_macro_ms += 1000;
+                }
+            });
+            ui.horizontal(|ui| {
                 ui.label("名字:");
-                // 让输入框自适应剩余宽度
                 // let text_edit_width = ui.available_width() - 150.0; // 预留按钮宽度
                 ui.add(egui::TextEdit::singleline(&mut self.delay_macro_name).desired_width(50.0));
 
@@ -394,16 +392,22 @@ impl App {
                     // 宏间隔设置
                     ui.horizontal(|ui| {
                         ui.label("宏间隔:");
+                        ui.spacing_mut().item_spacing.x = 0.0;
+
                         let mut interval = self.state.get_macro_interval_ms();
+                        if ui.add(egui::Button::new("-")).clicked() {
+                            interval = interval.saturating_sub(1000);
+                            self.state.set_macro_interval_ms(interval);
+                        }
+
                         if ui
-                            .add(
-                                egui::DragValue::new(&mut interval)
-                                    .speed(100)
-                                    .range(0..=600000)
-                                    .suffix("ms"),
-                            )
+                            .add(egui::DragValue::new(&mut interval).speed(1000).suffix("ms"))
                             .changed()
                         {
+                            self.state.set_macro_interval_ms(interval);
+                        }
+                        if ui.add(egui::Button::new("+")).clicked() {
+                            interval = interval.saturating_add(1000);
                             self.state.set_macro_interval_ms(interval);
                         }
                     });
@@ -411,7 +415,7 @@ impl App {
                         // 播放一次
                         if ui
                             .button(if is_playing {
-                                "⏹ 停止播放 (F9)"
+                                "⏹ 停止播放 (F4)"
                             } else {
                                 "▶ 播放 1 次 (F7)"
                             })
@@ -427,7 +431,7 @@ impl App {
                         // 播放多次
                         if ui
                             .button(if is_playing {
-                                "⏹ 停止播放 (F9)"
+                                "⏹ 停止播放 (F4)"
                             } else {
                                 "▶ 播放 (F8)"
                             })
@@ -442,18 +446,22 @@ impl App {
                         }
 
                         ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+
                             // 播放次数
                             let mut repeat_count = self.state.get_repeat_count();
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut repeat_count)
-                                        .speed(1)
-                                        .range(1..=10000),
-                                )
-                                .changed()
-                            {
+                            if ui.add(egui::Button::new("-")).clicked() {
+                                repeat_count = repeat_count.saturating_sub(1);
                                 self.state.set_repeat_count(repeat_count);
                             }
+                            if ui.add(egui::DragValue::new(&mut repeat_count).speed(1)).changed() {
+                                self.state.set_repeat_count(repeat_count);
+                            }
+                            if ui.add(egui::Button::new("+")).clicked() {
+                                repeat_count = repeat_count.saturating_add(1);
+                                self.state.set_repeat_count(repeat_count);
+                            }
+
                             ui.label("次");
                         });
                     });
@@ -468,18 +476,19 @@ impl App {
     fn render_status_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let total_macros = self.state.macro_manager.get_all_macros().len();
+                let total_macros = self.state.macro_manager.get_macro_count();
                 ui.label(format!("宏数量: {total_macros}"));
-
-                ui.separator();
 
                 // 录制状态
                 if self.state.recorder.is_recording() {
+                    ui.separator();
                     let time_elapsed = self.state.recorder.get_time_elapsed();
-                    let events_count = self.state.recorder.get_events_count();
+                    let click_time_elapsed = self.state.recorder.get_click_time_elapsed();
+                    let events_count = self.state.recorder.get_event_count();
                     ui.label(format!(
-                        "🔴 录制中... {:.1}s | 事件: {events_count}",
-                        time_elapsed as f64 / 1000.0
+                        "🔴 录制中: {:.1}s | 点击: {:.1}s | 事件: {events_count}",
+                        time_elapsed as f64 / 1000.0,
+                        click_time_elapsed as f64 / 1000.0
                     ));
                 }
 
@@ -548,10 +557,6 @@ impl App {
     }
 
     fn play_selected_macros(&mut self, repeat_count: u32) {
-        self.state.play_selected_macros(
-            &self.state.get_selected_macros(),
-            repeat_count,
-            self.state.get_macro_interval_ms(),
-        );
+        self.state.play_selected_macros(repeat_count);
     }
 }

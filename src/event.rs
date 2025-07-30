@@ -24,12 +24,6 @@ pub enum MacroEventType {
     KeyRelease {
         key: String,
     },
-    // 新增图像识别事件
-    ImageFind {
-        image_path: String,
-        confidence: f64,
-        timeout: u64,
-    },
 
     // 新增延时事件
     Delay {

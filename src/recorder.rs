@@ -17,10 +17,11 @@ pub struct MacroRecorder {
     events: Arc<Mutex<Vec<MacroEvent>>>,
     is_recording: Arc<AtomicBool>,
     start_time: Arc<Mutex<Option<Instant>>>,
-    // last_mouse_pos: Arc<Mutex<(i32, i32)>>,
+    last_mouse_pos: Arc<Mutex<(i32, i32)>>,
     // 添加设备状态监听
     device_state: Arc<Mutex<DeviceState>>,
     shortcuts: Arc<Vec<Shortcut>>,
+    click_time: Arc<Mutex<Option<Instant>>>,
 }
 
 impl MacroRecorder {
@@ -29,9 +30,10 @@ impl MacroRecorder {
             events: Arc::new(Mutex::new(Vec::new())),
             is_recording: Arc::new(AtomicBool::new(false)),
             start_time: Arc::new(Mutex::new(None)),
-            // last_mouse_pos: Arc::new(Mutex::new((0, 0))),
+            last_mouse_pos: Arc::new(Mutex::new((0, 0))),
             device_state: Arc::new(Mutex::new(DeviceState::new())),
             shortcuts,
+            click_time: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -58,19 +60,19 @@ impl MacroRecorder {
                     break;
                 }
 
-                // const MIN_DIST: i32 = 8;
-                // let lastpos = *recorder.last_mouse_pos.lock();
+                const MIN_DIST: i32 = 16;
+                let lastpos = *recorder.last_mouse_pos.lock();
                 // 监听鼠标事件
                 let mouse_state = device_state.lock().get_mouse();
-                if mouse_state.coords != last_mouse_state.coords {
-                    recorder.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
-                }
+                // if mouse_state.coords != last_mouse_state.coords {
+                //     recorder.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
+                // }
 
                 // 监听鼠标点击
                 if mouse_state.button_pressed != last_mouse_state.button_pressed {
-                    // if mouse_state.coords != lastpos {
-                    //     recorder.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
-                    // }
+                    if mouse_state.coords != lastpos {
+                        recorder.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
+                    }
                     for (i, pressed) in mouse_state.button_pressed.iter().enumerate() {
                         if *pressed {
                             recorder.add_mouse_click(
@@ -88,15 +90,15 @@ impl MacroRecorder {
                             );
                         }
                     }
-                }
-                // } else {
-                //     let (cur_x, cur_y) = mouse_state.coords;
-                //     if (cur_x - lastpos.0).abs() >= MIN_DIST
-                //         || (cur_y - lastpos.1).abs() >= MIN_DIST
-                //     {
-                //         recorder.add_mouse_move(cur_x, cur_y);
-                //     }
                 // }
+                } else {
+                    let (cur_x, cur_y) = mouse_state.coords;
+                    if (cur_x - lastpos.0).abs() >= MIN_DIST
+                        || (cur_y - lastpos.1).abs() >= MIN_DIST
+                    {
+                        recorder.add_mouse_move(cur_x, cur_y);
+                    }
+                }
 
                 // 监听键盘事件
                 let keys = device_state.lock().get_keys();
@@ -143,11 +145,17 @@ impl MacroRecorder {
             .unwrap_or(0)
     }
 
+    pub fn get_click_time_elapsed(&self) -> u64 {
+        (*self.click_time.lock())
+            .map(|time| time.elapsed().as_millis() as u64)
+            .unwrap_or(0)
+    }
+
     pub fn get_events(&self) -> Vec<MacroEvent> {
         self.events.lock().clone()
     }
 
-    pub fn get_events_count(&self) -> usize {
+    pub fn get_event_count(&self) -> usize {
         self.events.lock().len()
     }
 
@@ -157,17 +165,17 @@ impl MacroRecorder {
             return;
         }
 
-        let start_time = match *self.start_time.lock() {
-            Some(time) => time,
+        let timestamp = match *self.start_time.lock() {
+            Some(time) => time.elapsed().as_millis(),
             None => return,
         };
 
         // 更新最后鼠标位置
-        // *self.last_mouse_pos.lock() = (x, y);
+        *self.last_mouse_pos.lock() = (x, y);
 
         let macro_event = MacroEvent {
             event_type: MacroEventType::MouseMove { x, y },
-            timestamp: start_time.elapsed().as_millis(),
+            timestamp,
         };
 
         self.events.lock().push(macro_event);
@@ -179,8 +187,8 @@ impl MacroRecorder {
             return;
         }
 
-        let start_time = match *self.start_time.lock() {
-            Some(time) => time,
+        let timestamp = match *self.start_time.lock() {
+            Some(time) => time.elapsed().as_millis(),
             None => return,
         };
 
@@ -191,11 +199,12 @@ impl MacroRecorder {
                 // x,
                 // y,
             },
-            timestamp: start_time.elapsed().as_millis(),
+            timestamp,
         };
 
         self.events.lock().push(macro_event);
         // self.start_time.lock().replace(Instant::now());
+        self.click_time.lock().replace(Instant::now());
     }
 
     fn is_hotkey(&self, keys: &[Keycode]) -> bool {
@@ -216,8 +225,8 @@ impl MacroRecorder {
             return;
         }
 
-        let start_time = match *self.start_time.lock() {
-            Some(time) => time,
+        let timestamp = match *self.start_time.lock() {
+            Some(time) => time.elapsed().as_millis(),
             None => return,
         };
 
@@ -231,34 +240,11 @@ impl MacroRecorder {
                     key: key.to_string(),
                 }
             },
-            timestamp: start_time.elapsed().as_millis(),
+            timestamp,
         };
 
         self.events.lock().push(macro_event);
         // self.start_time.lock().replace(Instant::now());
-    }
-
-    // 新增图像识别相关方法
-    pub fn add_image_find(&self, image_path: &str, confidence: f64, timeout: u64) {
-        if !self.is_recording.load(Ordering::SeqCst) {
-            return;
-        }
-
-        let start_time = match *self.start_time.lock() {
-            Some(time) => time,
-            None => return,
-        };
-
-        let macro_event = MacroEvent {
-            event_type: MacroEventType::ImageFind {
-                image_path: image_path.to_string(),
-                confidence,
-                timeout,
-            },
-            timestamp: start_time.elapsed().as_millis(),
-        };
-
-        self.events.lock().push(macro_event);
     }
 
     // 新增延时事件方法
@@ -267,14 +253,14 @@ impl MacroRecorder {
             return;
         }
 
-        let start_time = match *self.start_time.lock() {
-            Some(time) => time,
+        let timestamp = match *self.start_time.lock() {
+            Some(time) => time.elapsed().as_millis(),
             None => return,
         };
 
         let macro_event = MacroEvent {
             event_type: MacroEventType::Delay { duration_ms },
-            timestamp: start_time.elapsed().as_millis(),
+            timestamp,
         };
         self.events.lock().push(macro_event);
     }

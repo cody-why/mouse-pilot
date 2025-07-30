@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use eframe::egui;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use crate::{
     hotkey::Shortcut,
@@ -15,22 +15,24 @@ pub struct AppState {
     pub macro_manager: MacroManager,
     pub recorder: MacroRecorder,
     pub repeat_count: Mutex<u32>,
-    pub selected_macros: Mutex<Vec<String>>,
+    pub selected_macros: RwLock<BTreeSet<String>>,
     pub macro_interval_ms: Mutex<u64>,
     pub shortcuts: Arc<Vec<Shortcut>>,
+    pub ui_context: egui::Context,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(ctx: &egui::Context) -> Self {
         let shortcuts = Self::init_shortcuts();
         Self {
             player: Mutex::new(MacroPlayer::default()),
             macro_manager: MacroManager::new(),
             recorder: MacroRecorder::new(shortcuts.clone()),
             repeat_count: Mutex::new(1),
-            selected_macros: Mutex::new(Vec::new()),
+            selected_macros: Default::default(),
             macro_interval_ms: Mutex::new(0),
             shortcuts,
+            ui_context: ctx.clone(),
         }
     }
 
@@ -38,10 +40,10 @@ impl AppState {
         // 初始化快捷键
         let shortcuts = vec![
             Shortcut::new("start_recording", egui::Key::F5, false, false, false, "开始录制", false),
-            Shortcut::new("stop_recording", egui::Key::F4, false, false, false, "停止录制", false),
+            Shortcut::new("stop", egui::Key::F4, false, false, false, "停止录制/播放", false),
             Shortcut::new("play_once", egui::Key::F7, false, false, false, "播放一次", false),
             Shortcut::new("play_multiple", egui::Key::F8, false, false, false, "播放多次", false),
-            Shortcut::new("stop_playback", egui::Key::F9, false, false, false, "停止播放", false),
+            // Shortcut::new("stop_playback", egui::Key::F9, false, false, false, "停止播放", false),
             Shortcut::new(
                 "clear_recording",
                 egui::Key::Delete,
@@ -61,7 +63,7 @@ impl AppState {
                 "取消全选",
                 true,
             ),
-            Shortcut::new("toggle_help", egui::Key::F1, false, false, false, "显示/隐藏帮助", true),
+            Shortcut::new("help", egui::Key::F1, false, false, false, "显示/隐藏帮助", true),
         ];
         Arc::new(shortcuts)
     }
@@ -86,20 +88,32 @@ impl AppState {
         *self.repeat_count.lock() = v;
     }
 
-    pub fn get_selected_macros(&self) -> Vec<String> {
-        self.selected_macros.lock().clone()
+    pub fn get_selected_macros(&self) -> BTreeSet<String> {
+        self.selected_macros.read().clone()
+    }
+
+    pub fn set_selected_macros(&self, v: BTreeSet<String>) {
+        *self.selected_macros.write() = v;
     }
 
     pub fn get_selected_count(&self) -> usize {
-        self.selected_macros.lock().len()
+        self.selected_macros.read().len()
     }
 
-    pub fn set_selected_macros(&self, v: Vec<String>) {
-        *self.selected_macros.lock() = v;
+    pub fn is_selected(&self, v: &str) -> bool {
+        self.selected_macros.read().contains(v)
+    }
+
+    pub fn add_selected_macros(&self, v: &str) {
+        self.selected_macros.write().insert(v.to_string());
+    }
+
+    pub fn remove_selected_macros(&self, v: &str) {
+        self.selected_macros.write().remove(v);
     }
 
     pub fn clear_selected_macros(&self) {
-        self.selected_macros.lock().clear();
+        self.selected_macros.write().clear();
     }
 
     pub fn get_macro_interval_ms(&self) -> u64 {
@@ -114,7 +128,17 @@ impl AppState {
         self.player.lock().get_playback_status()
     }
 
-    pub fn play_selected_macros(
+    pub fn play_selected_macros(&self, repeat_count: u32) {
+        if self.selected_macros.read().is_empty() {
+            return;
+        }
+        self.repaint_ui_after_secs(0.5);
+        let selected_macros = self.selected_macros.read().iter().cloned().collect::<Vec<_>>();
+        self._play_selected_macros(&selected_macros, repeat_count, self.get_macro_interval_ms());
+    }
+
+    #[inline]
+    fn _play_selected_macros(
         &self, selected_macros: &[String], repeat_count: u32, macro_interval_ms: u64,
     ) {
         // 停止当前播放
@@ -129,5 +153,9 @@ impl AppState {
             multi_player.start_playing_with_repeat(repeat_count);
             self.set_player(multi_player);
         }
+    }
+
+    pub fn repaint_ui_after_secs(&self, secs: f32) {
+        self.ui_context.request_repaint_after_secs(secs);
     }
 }
