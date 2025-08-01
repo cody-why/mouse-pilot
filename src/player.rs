@@ -7,7 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread::JoinHandle,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -37,6 +37,9 @@ impl PlaybackStatus {
             .unwrap()
             .as_millis()
             - self.current_macro_start_time;
+        if self.current_macro_total_time == 0 {
+            return 0.0;
+        }
         let progress = current_duration as f32 / self.current_macro_total_time as f32 * 100.0;
         progress.clamp(0.0, 100.0)
     }
@@ -44,15 +47,15 @@ impl PlaybackStatus {
 
 #[derive(Default, Clone)]
 pub struct MacroPlayer {
-    macros: Arc<Vec<SavedMacro>>,
+    macros: Arc<Vec<Arc<SavedMacro>>>,
     is_playing: Arc<AtomicBool>,
-    play_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    play_handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     interval_ms: u64,
     playback_status: Arc<RwLock<Arc<PlaybackStatus>>>,
 }
 
 impl MacroPlayer {
-    pub fn new(macros: Vec<SavedMacro>, interval_ms: u64) -> Self {
+    pub fn new(macros: Vec<Arc<SavedMacro>>, interval_ms: u64) -> Self {
         Self {
             macros: Arc::new(macros),
             is_playing: Arc::new(AtomicBool::new(false)),
@@ -77,24 +80,20 @@ impl MacroPlayer {
         self.is_playing.store(false, Ordering::Relaxed);
 
         if let Some(_handle) = self.play_handle.lock().take() {
-            // let _ = handle.join();
+            // handle.abort();
         }
         // 更新状态为停止
         *self.playback_status.write() = PlaybackStatus::new_arc();
     }
 
-    pub fn start_playing(&self) {
-        self.start_playing_with_repeat(1);
-    }
-
-    pub fn start_playing_with_repeat(&self, repeat_count: u32) {
+    pub fn start_playing(&self, repeat_count: u32) {
         if self.is_playing.load(Ordering::Relaxed) {
             return;
         }
 
         let player = self.clone();
-        let handle = std::thread::spawn(move || {
-            if let Err(e) = player.play_sync_with_repeat(repeat_count) {
+        let handle = thread::spawn(move || {
+            if let Err(e) = player.play_async_with_repeat(repeat_count) {
                 debug!("Error playing multi-macro: {e}");
             }
         });
@@ -102,130 +101,128 @@ impl MacroPlayer {
         *self.play_handle.lock() = Some(handle);
     }
 
-    fn play_sync_with_repeat(&self, repeat_count: u32) -> Result<()> {
+    fn play_async_with_repeat(&self, repeat_count: u32) -> Result<()> {
         self.is_playing.store(true, Ordering::Relaxed);
 
-        let total_macros = self.macros.len();
+        let mut status = PlaybackStatus {
+            is_playing: true,
+            total_repeats: repeat_count,
+            total_macros: self.macros.len(),
+            ..Default::default()
+        };
 
-        for repeat_index in 0..repeat_count {
-            if !self.is_playing.load(Ordering::Relaxed) {
-                break;
-            }
+        for repeat in 1..=repeat_count {
+            status.current_repeat = repeat;
+            *self.playback_status.write() = Arc::new(status.clone());
 
-            debug!("开始第 {} 次播放", repeat_index + 1);
-
-            for (i, macro_) in self.macros.iter().enumerate() {
+            for (macro_index, saved_macro) in self.macros.iter().enumerate() {
                 if !self.is_playing.load(Ordering::Relaxed) {
                     break;
                 }
-
-                let total_duration = macro_.events.last().map(|e| e.timestamp).unwrap_or(0);
-                let total_delay = macro_
+                let total_time = saved_macro.events.last().map(|e| e.timestamp).unwrap_or(0);
+                let total_delay = saved_macro
                     .events
                     .iter()
-                    .map(|e| match e.event_type {
-                        MacroEventType::Delay { duration_ms } => duration_ms as u128,
-                        _ => 0,
+                    .map(|e| {
+                        if let MacroEventType::Delay { duration_ms } = e.event_type {
+                            duration_ms
+                        } else {
+                            0
+                        }
                     })
-                    .sum::<u128>();
+                    .sum::<u64>() as u128;
+                let total_time = total_time + total_delay;
 
-                // 更新播放状态 - 只在宏开始时更新一次
-                let macro_start_timestamp = macro_.events.first().map(|e| e.timestamp).unwrap_or(0);
-                let macro_end_timestamp = total_duration + total_delay;
-                let start_time = std::time::SystemTime::now()
+                status.current_macro_index = macro_index;
+                status.current_macro_name = saved_macro.name.clone();
+                status.current_macro_start_time = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_millis();
+                status.current_macro_total_time = total_time;
+                *self.playback_status.write() = Arc::new(status.clone());
 
-                let status = PlaybackStatus {
-                    is_playing: true,
-                    current_repeat: repeat_index + 1,
-                    total_repeats: repeat_count,
-                    current_macro_index: i,
-                    total_macros,
-                    current_macro_name: macro_.name.clone(),
-                    current_macro_start_time: start_time,
-                    current_macro_total_time: macro_end_timestamp - macro_start_timestamp,
-                };
-                *self.playback_status.write() = Arc::new(status);
-
-                let mut last_timestamp = macro_start_timestamp;
-
-                for event in &macro_.events {
-                    let delay = event.timestamp - last_timestamp;
-                    if !self.sleep_efficient(delay as u64) {
-                        break;
-                    }
-                    last_timestamp = event.timestamp;
-
-                    // 事件执行
-                    match &event.event_type {
-                        MacroEventType::MouseMove { x, y } => {
-                            let _ = mouse::move_to(autopilot::geometry::Point::new(
-                                *x as f64, *y as f64,
-                            ));
-                        },
-                        MacroEventType::MouseClick { button, pressed } => {
-                            let button = match *button {
-                                Button::Left => mouse::Button::Left,
-                                Button::Right => mouse::Button::Right,
-                                Button::Middle => mouse::Button::Middle,
-                            };
-                            mouse::toggle(button, *pressed);
-                        },
-                        MacroEventType::KeyPress { key } => match pilot_key_code_from_str(key) {
-                            KeyConvert::Keycode(key_code) => {
-                                autopilot::key::toggle(&key_code, true, &[], 0);
-                            },
-                            KeyConvert::Character(key_code) => {
-                                autopilot::key::toggle(&key_code, true, &[], 0);
-                            },
-                            _ => {
-                                debug!("无法识别的按键: {key}");
-                            },
-                        },
-
-                        MacroEventType::KeyRelease { key } => match pilot_key_code_from_str(key) {
-                            KeyConvert::Keycode(key_code) => {
-                                autopilot::key::toggle(&key_code, false, &[], 0);
-                            },
-                            KeyConvert::Character(key_code) => {
-                                autopilot::key::toggle(&key_code, false, &[], 0);
-                            },
-                            _ => {
-                                debug!("无法识别的按键: {key}");
-                            },
-                        },
-                        MacroEventType::Delay { duration_ms } => {
-                            debug!("Delay: {duration_ms}ms");
-                            if !self.sleep_efficient(*duration_ms) {
-                                break;
-                            }
-                        },
-                    }
+                if let Err(e) = self.play_macro_async(saved_macro) {
+                    debug!("Error playing macro {}: {e}", saved_macro.name);
                 }
 
-                // 在宏之间添加间隔（除了最后一个宏）
-                if i < self.macros.len() - 1 && self.interval_ms > 0 {
-                    if !self.is_playing.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    debug!("Waiting {}ms before next macro...", self.interval_ms);
-                    if !self.sleep_efficient(self.interval_ms) {
-                        break;
-                    }
+                // 宏之间的间隔
+                if macro_index < self.macros.len() - 1
+                    && self.interval_ms > 0
+                    && !self.sleep_efficient(self.interval_ms)
+                {
+                    break;
                 }
             }
         }
 
         self.is_playing.store(false, Ordering::Relaxed);
-        // 播放完成，更新状态
         *self.playback_status.write() = PlaybackStatus::new_arc();
+
         Ok(())
     }
 
-    /// 优化的睡眠方法，长延迟时，可以中断
-    /// 返回false表示播放被中断
+    fn play_macro_async(&self, saved_macro: &SavedMacro) -> Result<()> {
+        let mut last_timestamp = 0u128;
+
+        for event in &saved_macro.events {
+            if !self.is_playing.load(Ordering::Relaxed) {
+                break;
+            }
+            // 计算延时
+            let delay = event.timestamp.saturating_sub(last_timestamp);
+            if !self.sleep_efficient(delay as u64) {
+                break;
+            }
+
+            // 执行事件
+            match &event.event_type {
+                MacroEventType::MouseMove { x, y } => {
+                    let _ = mouse::move_to(autopilot::geometry::Point::new(*x as f64, *y as f64));
+                },
+                MacroEventType::MouseClick { button, pressed } => {
+                    let button = match button {
+                        Button::Left => mouse::Button::Left,
+                        Button::Right => mouse::Button::Right,
+                        Button::Middle => mouse::Button::Middle,
+                    };
+                    mouse::toggle(button, *pressed);
+                },
+                MacroEventType::KeyPress { key } => match pilot_key_code_from_str(key) {
+                    KeyConvert::Keycode(key_code) => {
+                        autopilot::key::toggle(&key_code, true, &[], 0);
+                    },
+                    KeyConvert::Character(key_code) => {
+                        autopilot::key::toggle(&key_code, true, &[], 0);
+                    },
+                    _ => {
+                        debug!("无法识别的按键: {key}");
+                    },
+                },
+                MacroEventType::KeyRelease { key } => match pilot_key_code_from_str(key) {
+                    KeyConvert::Keycode(key_code) => {
+                        autopilot::key::toggle(&key_code, false, &[], 0);
+                    },
+                    KeyConvert::Character(key_code) => {
+                        autopilot::key::toggle(&key_code, false, &[], 0);
+                    },
+                    _ => {
+                        debug!("无法识别的按键: {key}");
+                    },
+                },
+                MacroEventType::Delay { duration_ms } => {
+                    if !self.sleep_efficient(*duration_ms) {
+                        break;
+                    }
+                },
+            }
+
+            last_timestamp = event.timestamp;
+        }
+
+        Ok(())
+    }
+
     #[inline]
     fn sleep_efficient(&self, delay_ms: u64) -> bool {
         if delay_ms == 0 {
@@ -234,24 +231,19 @@ impl MacroPlayer {
 
         let start = Instant::now();
         let target_duration = Duration::from_millis(delay_ms);
-
-        // 根据延迟时间调整检查间隔
-        let check_interval = if delay_ms < 500 {
-            Duration::from_millis(delay_ms)
-        } else if delay_ms < 1000 {
-            Duration::from_millis(500)
-        } else {
-            Duration::from_millis(1000)
+        let sleep_time = match delay_ms {
+            d if d < 1000 => d,
+            _ => 1000,
         };
 
-        while start.elapsed() < target_duration {
-            let remaining = target_duration - start.elapsed();
-            let sleep_duration = std::cmp::min(remaining, check_interval);
-            std::thread::sleep(sleep_duration);
-
+        let mut elapsed = Duration::from_millis(0);
+        while elapsed < target_duration {
+            let sleep_time = sleep_time.min((target_duration - elapsed).as_millis() as u64);
+            thread::sleep(Duration::from_millis(sleep_time));
             if !self.is_playing.load(Ordering::Relaxed) {
                 return false;
             }
+            elapsed = start.elapsed();
         }
 
         true

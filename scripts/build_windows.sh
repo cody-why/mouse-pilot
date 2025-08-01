@@ -27,7 +27,8 @@ fi
 # Build for Windows
 cargo build --release --target x86_64-pc-windows-gnu
 
+mkdir -p ~/Downloads/release
 target_dir=$(cargo metadata --format-version=1 | jq -r '.target_directory')
-cp $target_dir/x86_64-pc-windows-gnu/release/mousepilot.exe ~/Downloads/
+cp $target_dir/x86_64-pc-windows-gnu/release/mousepilot.exe ~/Downloads/release/
 
 echo "Windows build complete"

@@ -1,12 +1,13 @@
 use anyhow::Result;
 use device_query::{DeviceQuery, DeviceState, Keycode, MouseState};
-use eframe::egui;
+
 use parking_lot::Mutex;
 use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -18,8 +19,8 @@ pub struct MacroRecorder {
     is_recording: Arc<AtomicBool>,
     start_time: Arc<Mutex<Option<Instant>>>,
     last_mouse_pos: Arc<Mutex<(i32, i32)>>,
-    // 添加设备状态监听
-    device_state: Arc<Mutex<DeviceState>>,
+    // 异步任务管理
+    recording_task: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     shortcuts: Arc<Vec<Shortcut>>,
     click_time: Arc<Mutex<Option<Instant>>>,
 }
@@ -31,7 +32,7 @@ impl MacroRecorder {
             is_recording: Arc::new(AtomicBool::new(false)),
             start_time: Arc::new(Mutex::new(None)),
             last_mouse_pos: Arc::new(Mutex::new((0, 0))),
-            device_state: Arc::new(Mutex::new(DeviceState::new())),
+            recording_task: Arc::new(Mutex::new(None)),
             shortcuts,
             click_time: Arc::new(Mutex::new(None)),
         }
@@ -46,93 +47,78 @@ impl MacroRecorder {
         *self.start_time.lock() = Some(Instant::now());
         self.events.lock().clear();
 
-        // 启动设备监听线程
+        // 启动异步录制任务
         let recorder = self.clone();
         let is_recording = self.is_recording.clone();
-        let device_state = self.device_state.clone();
 
-        std::thread::spawn(move || {
-            let mut last_mouse_state = MouseState::default();
-            let mut last_keys = Vec::new();
-
-            loop {
-                if !is_recording.load(Ordering::SeqCst) {
-                    break;
-                }
-
-                const MIN_DIST: i32 = 16;
-                let lastpos = *recorder.last_mouse_pos.lock();
-                // 监听鼠标事件
-                let mouse_state = device_state.lock().get_mouse();
-                // if mouse_state.coords != last_mouse_state.coords {
-                //     recorder.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
-                // }
-
-                // 监听鼠标点击
-                if mouse_state.button_pressed != last_mouse_state.button_pressed {
-                    if mouse_state.coords != lastpos {
-                        recorder.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
-                    }
-                    for (i, pressed) in mouse_state.button_pressed.iter().enumerate() {
-                        if *pressed {
-                            recorder.add_mouse_click(
-                                Button::from(i),
-                                true,
-                                // mouse_state.coords.0,
-                                // mouse_state.coords.1,
-                            );
-                        } else if *last_mouse_state.button_pressed.get(i).unwrap_or(&false) {
-                            recorder.add_mouse_click(
-                                Button::from(i),
-                                false,
-                                // mouse_state.coords.0,
-                                // mouse_state.coords.1,
-                            );
-                        }
-                    }
-                // }
-                } else {
-                    let (cur_x, cur_y) = mouse_state.coords;
-                    if (cur_x - lastpos.0).abs() >= MIN_DIST
-                        || (cur_y - lastpos.1).abs() >= MIN_DIST
-                    {
-                        recorder.add_mouse_move(cur_x, cur_y);
-                    }
-                }
-
-                // 监听键盘事件
-                let keys = device_state.lock().get_keys();
-                // 排除快捷键
-                if !recorder.is_hotkey(&keys) {
-                    for key in &keys {
-                        if !last_keys.contains(key) {
-                            recorder.add_key_event(&format!("{key:?}"), true);
-                        }
-                    }
-                    for key in &last_keys {
-                        if !keys.contains(key) {
-                            recorder.add_key_event(&format!("{key:?}"), false);
-                        }
-                    }
-                }
-
-                last_mouse_state = mouse_state;
-                last_keys = keys;
-
-                std::thread::sleep(Duration::from_millis(10));
-            }
+        let handle = thread::spawn(move || {
+            recorder.run_recording_loop(is_recording);
         });
+
+        *self.recording_task.lock() = Some(handle);
 
         Ok(())
     }
 
-    pub fn stop_recording(&self) {
-        if !self.is_recording.load(Ordering::SeqCst) {
-            return;
-        }
+    fn run_recording_loop(&self, is_recording: Arc<AtomicBool>) {
+        let device_state = DeviceState::new();
+        let mut last_mouse_state = MouseState::default();
+        let mut last_keys = Vec::new();
 
+        while is_recording.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(10));
+
+            const MIN_DIST: i32 = 8;
+            let lastpos = *self.last_mouse_pos.lock();
+
+            // 监听鼠标事件
+            let mouse_state = device_state.get_mouse();
+
+            // 监听鼠标点击
+            if mouse_state.button_pressed != last_mouse_state.button_pressed {
+                if mouse_state.coords != lastpos {
+                    self.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
+                }
+                for (i, pressed) in mouse_state.button_pressed.iter().enumerate() {
+                    if *pressed {
+                        self.add_mouse_click(Button::from(i), true);
+                    } else if *last_mouse_state.button_pressed.get(i).unwrap_or(&false) {
+                        self.add_mouse_click(Button::from(i), false);
+                    }
+                }
+            } else {
+                let (cur_x, cur_y) = mouse_state.coords;
+                if (cur_x - lastpos.0).abs() >= MIN_DIST || (cur_y - lastpos.1).abs() >= MIN_DIST {
+                    self.add_mouse_move(cur_x, cur_y);
+                }
+            }
+
+            // 监听键盘事件
+            let keys = device_state.get_keys();
+            if keys != last_keys {
+                for key in &keys {
+                    if !last_keys.contains(key) {
+                        self.add_key_event(&key.to_string(), true);
+                    }
+                }
+                for key in &last_keys {
+                    if !keys.contains(key) {
+                        self.add_key_event(&key.to_string(), false);
+                    }
+                }
+                last_keys = keys;
+            }
+
+            last_mouse_state = mouse_state;
+        }
+    }
+
+    pub fn stop_recording(&self) {
         self.is_recording.store(false, Ordering::SeqCst);
-        *self.start_time.lock() = None;
+
+        if let Some(_handle) = self.recording_task.lock().take() {
+            // handle.abort();
+        }
     }
 
     pub fn is_recording(&self) -> bool {
@@ -159,78 +145,49 @@ impl MacroRecorder {
         self.events.lock().len()
     }
 
-    // 手动添加事件的方法
     pub fn add_mouse_move(&self, x: i32, y: i32) {
-        if !self.is_recording.load(Ordering::SeqCst) {
-            return;
-        }
-
-        let timestamp = match *self.start_time.lock() {
-            Some(time) => time.elapsed().as_millis(),
-            None => return,
-        };
-
-        // 更新最后鼠标位置
-        *self.last_mouse_pos.lock() = (x, y);
-
-        let macro_event = MacroEvent {
+        let elapsed = self.get_time_elapsed();
+        let event = MacroEvent {
             event_type: MacroEventType::MouseMove { x, y },
-            timestamp,
+            timestamp: elapsed as u128,
         };
-
-        self.events.lock().push(macro_event);
-        // self.start_time.lock().replace(Instant::now());
+        self.events.lock().push(event);
+        *self.last_mouse_pos.lock() = (x, y);
     }
 
     pub fn add_mouse_click(&self, button: Button, pressed: bool) {
-        if !self.is_recording.load(Ordering::SeqCst) {
-            return;
+        let elapsed = self.get_time_elapsed();
+        let event = MacroEvent {
+            event_type: MacroEventType::MouseClick { button, pressed },
+            timestamp: elapsed as u128,
+        };
+        self.events.lock().push(event);
+
+        if pressed {
+            *self.click_time.lock() = Some(Instant::now());
         }
-
-        let timestamp = match *self.start_time.lock() {
-            Some(time) => time.elapsed().as_millis(),
-            None => return,
-        };
-
-        let macro_event = MacroEvent {
-            event_type: MacroEventType::MouseClick {
-                button,
-                pressed,
-                // x,
-                // y,
-            },
-            timestamp,
-        };
-
-        self.events.lock().push(macro_event);
-        // self.start_time.lock().replace(Instant::now());
-        self.click_time.lock().replace(Instant::now());
     }
 
     fn is_hotkey(&self, keys: &[Keycode]) -> bool {
-        for key in keys {
-            if let Some(key) = egui::Key::from_name(&key.to_string()) {
-                for shortcut in self.shortcuts.iter() {
-                    if shortcut.key == key {
-                        return true;
-                    }
-                }
+        for shortcut in self.shortcuts.iter() {
+            if shortcut.matches_keycode(&shortcut.key, keys) {
+                return true;
             }
         }
         false
     }
 
     pub fn add_key_event(&self, key: &str, pressed: bool) {
-        if !self.is_recording.load(Ordering::SeqCst) {
-            return;
+        // 检查是否为快捷键
+        if let Ok(keycode) = key.parse::<Keycode>() {
+            let keys = vec![keycode];
+            if self.is_hotkey(&keys) {
+                return; // 跳过快捷键事件
+            }
         }
 
-        let timestamp = match *self.start_time.lock() {
-            Some(time) => time.elapsed().as_millis(),
-            None => return,
-        };
-
-        let macro_event = MacroEvent {
+        let elapsed = self.get_time_elapsed();
+        let event = MacroEvent {
             event_type: if pressed {
                 MacroEventType::KeyPress {
                     key: key.to_string(),
@@ -240,32 +197,23 @@ impl MacroRecorder {
                     key: key.to_string(),
                 }
             },
-            timestamp,
+            timestamp: elapsed as u128,
         };
-
-        self.events.lock().push(macro_event);
-        // self.start_time.lock().replace(Instant::now());
+        self.events.lock().push(event);
     }
 
-    // 新增延时事件方法
     pub fn add_delay(&self, duration_ms: u64) {
-        if !self.is_recording.load(Ordering::SeqCst) {
-            return;
-        }
-
-        let timestamp = match *self.start_time.lock() {
-            Some(time) => time.elapsed().as_millis(),
-            None => return,
-        };
-
-        let macro_event = MacroEvent {
+        let elapsed = self.get_time_elapsed();
+        let event = MacroEvent {
             event_type: MacroEventType::Delay { duration_ms },
-            timestamp,
+            timestamp: elapsed as u128,
         };
-        self.events.lock().push(macro_event);
+        self.events.lock().push(event);
     }
 
     pub fn clear_events(&self) {
         self.events.lock().clear();
+        *self.start_time.lock() = None;
+        *self.click_time.lock() = None;
     }
 }

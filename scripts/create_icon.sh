@@ -24,7 +24,7 @@ echo "Converting SVG to PNG files..."
 
 # 裁剪圆角边缘留空
 magick "$ICON_DIR/${ICON_NAME}.svg" \
-  \( -size 512x512 xc:none -draw "roundrectangle 60,60,452,452,100,100" \) \
+  \( -size 512x512 xc:none -draw "roundrectangle 50,50,462,462,100,100" \) \
   -alpha set -compose DstIn -composite "$ICON_DIR/icon_s.png"
 
 # Generate different sizes
@@ -67,10 +67,11 @@ echo "Windows icon created: $ICON_DIR/icon.ico"
 
 cp "$ICON_DIR/icon_256x256.png" "$ICON_DIR/icon.png"
 
-# Clean up temporary PNG files
-rm -f "$ICON_DIR"/icon_*.png
 
 # 转换icon为 Rust 代码
 cargo test --test convert_icon
+
+# Clean up 
+rm -f "$ICON_DIR/icon*.png"
 
 echo "Icon creation complete!"

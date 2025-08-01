@@ -17,7 +17,7 @@ pub struct SavedMacro {
 
 #[derive(Debug, Clone)]
 pub struct MacroManager {
-    pub macros: Arc<RwLock<BTreeMap<String, SavedMacro>>>,
+    pub macros: Arc<RwLock<BTreeMap<String, Arc<SavedMacro>>>>,
     storage_path: String,
 }
 
@@ -74,24 +74,8 @@ impl MacroManager {
         let json = serde_json::to_string(&saved_macro)?;
         fs::write(file_path, json)?;
 
-        self.macros.write().insert(name.to_string(), saved_macro);
+        self.macros.write().insert(name.to_string(), Arc::new(saved_macro));
         Ok(())
-    }
-
-    pub fn load_macro(&self, name: &str) -> Result<Option<Vec<MacroEvent>>> {
-        let file_path = format!("{}/{}.json", self.storage_path, name);
-
-        if !Path::new(&file_path).exists() {
-            return Ok(None);
-        }
-
-        let file = fs::File::open(file_path)?;
-        let saved_macro: SavedMacro = serde_json::from_reader(BufReader::new(file))?;
-
-        // 更新内存中的宏
-        self.macros.write().insert(name.to_string(), saved_macro.clone());
-
-        Ok(Some(saved_macro.events))
     }
 
     pub fn delete_macro(&self, name: &str) -> Result<()> {
@@ -111,18 +95,22 @@ impl MacroManager {
 
         if Path::new(&old_path).exists() {
             fs::rename(old_path, &new_path)?;
-            let macro_data = self.macros.write().remove(old_name);
-            if let Some(mut macro_data) = macro_data {
-                macro_data.name = new_name.to_string();
-                fs::write(new_path, serde_json::to_string(&macro_data)?)?;
-                self.macros.write().insert(new_name.to_string(), macro_data);
-            }
+        }
+        let macro_data = self.macros.write().remove(old_name);
+        if let Some(macro_data) = macro_data {
+            let macro_data = SavedMacro {
+                name: new_name.to_string(),
+                events: macro_data.events.clone(),
+                created_at: macro_data.created_at,
+            };
+            fs::write(new_path, serde_json::to_string(&macro_data)?)?;
+            self.macros.write().insert(new_name.to_string(), Arc::new(macro_data));
         }
 
         Ok(())
     }
 
-    pub fn get_all_macros(&self) -> Vec<SavedMacro> {
+    pub fn get_all_macros(&self) -> Vec<Arc<SavedMacro>> {
         self.macros.read().values().cloned().collect()
     }
 
@@ -149,7 +137,7 @@ impl MacroManager {
                 if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                     if let Ok(file) = fs::File::open(&path) {
                         if let Ok(saved_macro) = serde_json::from_reader(BufReader::new(file)) {
-                            self.macros.write().insert(name.to_string(), saved_macro);
+                            self.macros.write().insert(name.to_string(), Arc::new(saved_macro));
                         }
                     }
                 }
@@ -159,7 +147,7 @@ impl MacroManager {
         Ok(())
     }
 
-    pub fn get_macros(&self, names: &[String]) -> Vec<SavedMacro> {
+    pub fn get_macros(&self, names: &[String]) -> Vec<Arc<SavedMacro>> {
         self.macros
             .read()
             .values()

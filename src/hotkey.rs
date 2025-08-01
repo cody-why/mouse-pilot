@@ -1,11 +1,15 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
 };
 
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use eframe::egui;
 use log::debug;
+use parking_lot::Mutex;
 
 use crate::state::AppState;
 
@@ -82,7 +86,7 @@ impl Shortcut {
     }
 
     /// 将device_query::Keycode转换为egui::Key
-    pub fn to_key(keycode: Keycode) -> Option<egui::Key> {
+    pub fn to_key(keycode: &Keycode) -> Option<egui::Key> {
         egui::Key::from_name(&keycode.to_string())
     }
 
@@ -105,79 +109,96 @@ impl Shortcut {
             parts.push("Alt".to_string());
         }
 
-        parts.push(format!("{:?}", self.key));
-        parts.join("+")
+        parts.push(self.key.name().to_string());
+
+        parts.join(" + ")
     }
 }
 
-// 全局快捷键监听器
 pub struct GlobalHotkeyListener {
-    device_state: DeviceState,
     running: Arc<AtomicBool>,
+    listener_task: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
 }
 
 impl GlobalHotkeyListener {
     pub fn new() -> Self {
         Self {
-            device_state: DeviceState::new(),
-            running: Arc::new(AtomicBool::new(true)),
+            running: Arc::new(AtomicBool::new(false)),
+            listener_task: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
     pub fn start(&self, state: Arc<AppState>) {
+        if self.running.load(Ordering::SeqCst) {
+            return;
+        }
+
+        self.running.store(true, Ordering::SeqCst);
         let running = self.running.clone();
-        let shortcuts = state.shortcuts.clone();
-        let device_state = self.device_state.clone();
-        std::thread::spawn(move || {
-            let mut last_keys = Vec::new();
-            while running.load(Ordering::SeqCst) {
-                let keys = device_state.get_keys();
-                for key in &keys {
-                    if !last_keys.contains(key) {
-                        if let Some(key) = &Shortcut::to_key(*key) {
-                            for shortcut in shortcuts.iter() {
-                                if shortcut.matches_keycode(key, &keys) {
-                                    // 直接处理
-                                    ShortcutProcessor::execute_shortcut(&shortcut.name, &state);
-                                    std::thread::sleep(std::time::Duration::from_millis(1));
-                                }
+        let listener_task = self.listener_task.clone();
+
+        let handle = thread::spawn(move || {
+            Self::run_listener_loop(running, state);
+        });
+
+        *listener_task.lock() = Some(handle);
+    }
+
+    fn run_listener_loop(running: Arc<AtomicBool>, state: Arc<AppState>) {
+        let device_state = DeviceState::new();
+        let mut last_keys = Vec::new();
+
+        while running.load(Ordering::SeqCst) {
+            thread::sleep(std::time::Duration::from_millis(10));
+
+            let keys = device_state.get_keys();
+            if keys != last_keys {
+                for key in keys.iter() {
+                    if let Some(key) = Shortcut::to_key(key) {
+                        for shortcut in state.shortcuts.iter() {
+                            if shortcut.matches_keycode(&key, &keys) {
+                                debug!("检测到全局快捷键: {}", shortcut.name);
+                                ShortcutProcessor::execute_shortcut(&shortcut.name, &state);
+                                break;
                             }
                         }
                     }
                 }
                 last_keys = keys;
-                std::thread::sleep(std::time::Duration::from_millis(16)); // 60Hz
             }
-        });
+        }
     }
 
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
+
+        if let Some(_handle) = self.listener_task.lock().take() {
+            // handle.abort();
+        }
     }
 }
 
-// 只保留静态方法
 pub struct ShortcutProcessor;
 
 impl ShortcutProcessor {
     pub fn execute_shortcut(shortcut_name: &str, state: &AppState) {
-        debug!("独立线程执行快捷键: {shortcut_name}");
+        debug!("执行全局快捷键: {shortcut_name}");
         match shortcut_name {
             "start_recording" => {
                 state.stop_player();
                 if let Err(e) = state.recorder.start_recording() {
                     debug!("Failed to start recording: {e}");
                 }
-                state.repaint_ui_after_secs(0.5);
+                state.ui_repaint_after_secs(0.2);
             },
             "stop" => {
-                state.recorder.stop_recording();
-                state.stop_player();
+                if state.recorder.is_recording() {
+                    state.recorder.stop_recording();
+                }
+                if state.is_playing() {
+                    state.stop_player();
+                }
             },
-            "clear_recording" => {
-                state.recorder.clear_events();
-            },
-
             "play_once" => {
                 if !state.recorder.is_recording() {
                     state.play_selected_macros(1);
@@ -185,16 +206,14 @@ impl ShortcutProcessor {
             },
             "play_multiple" => {
                 if !state.recorder.is_recording() {
-                    let repeat = state.get_repeat_count();
-                    state.play_selected_macros(repeat);
+                    state.play_selected_macros(state.get_repeat_count());
                 }
             },
-            "select_all_macros" | "deselect_all_macros" | "help" => {
-                // 需要UI状态，跳过
-                debug!("快捷键 '{shortcut_name}' 需要UI状态访问，暂时跳过");
+            "clear_recording" => {
+                state.recorder.clear_events();
             },
             _ => {
-                debug!("未知快捷键: {shortcut_name}");
+                debug!("未知的快捷键: {shortcut_name}");
             },
         }
     }

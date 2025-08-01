@@ -93,7 +93,7 @@ impl eframe::App for App {
         }
         if self.state.recorder.is_recording() || self.state.is_playing() {
             // 强制刷新UI
-            ctx.request_repaint_after_secs(0.5);
+            ctx.request_repaint_after_secs(0.2);
         }
 
         // 状态信息区域始终在底部，且要在所有面板之前调用
@@ -178,10 +178,10 @@ impl App {
 
         // 宏列表
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let macros = self.state.macro_manager.macros.read();
+            let macros = self.state.macro_manager.get_all_macros();
             // macros.sort_by(|a, b| a.name.cmp(&b.name));
 
-            for macro_data in macros.values() {
+            for macro_data in macros.iter() {
                 ui.horizontal(|ui| {
                     let mut is_selected = self.state.is_selected(&macro_data.name);
 
@@ -329,11 +329,14 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label("延时:");
                 ui.spacing_mut().item_spacing.x = 0.0;
-                if ui.add(egui::Button::new("-")).clicked() {
+
+                ui.add(egui::DragValue::new(&mut self.delay_macro_ms).speed(1000).suffix("ms"));
+                // ▽▼
+                if ui.add(egui::Button::new("▼").frame(false)).clicked() {
                     self.delay_macro_ms = self.delay_macro_ms.saturating_sub(1000);
                 }
-                ui.add(egui::DragValue::new(&mut self.delay_macro_ms).speed(1000).suffix("ms"));
-                if ui.add(egui::Button::new("+")).clicked() {
+                // △▲
+                if ui.add(egui::Button::new("▲").frame(false)).clicked() {
                     self.delay_macro_ms += 1000;
                 }
             });
@@ -388,17 +391,13 @@ impl App {
             ui.separator();
             ui.label("播放控制");
             ui.add_enabled_ui(!is_recording, |ui| {
-                if selected_count > 0 {
+                if selected_count > 0 || is_playing {
                     // 宏间隔设置
                     ui.horizontal(|ui| {
                         ui.label("宏间隔:");
                         ui.spacing_mut().item_spacing.x = 0.0;
 
                         let mut interval = self.state.get_macro_interval_ms();
-                        if ui.add(egui::Button::new("-")).clicked() {
-                            interval = interval.saturating_sub(1000);
-                            self.state.set_macro_interval_ms(interval);
-                        }
 
                         if ui
                             .add(egui::DragValue::new(&mut interval).speed(1000).suffix("ms"))
@@ -406,7 +405,11 @@ impl App {
                         {
                             self.state.set_macro_interval_ms(interval);
                         }
-                        if ui.add(egui::Button::new("+")).clicked() {
+                        if ui.add(egui::Button::new("▼").frame(false)).clicked() {
+                            interval = interval.saturating_sub(1000);
+                            self.state.set_macro_interval_ms(interval);
+                        }
+                        if ui.add(egui::Button::new("▲").frame(false)).clicked() {
                             interval = interval.saturating_add(1000);
                             self.state.set_macro_interval_ms(interval);
                         }
@@ -450,19 +453,21 @@ impl App {
 
                             // 播放次数
                             let mut repeat_count = self.state.get_repeat_count();
-                            if ui.add(egui::Button::new("-")).clicked() {
+
+                            if ui
+                                .add(egui::DragValue::new(&mut repeat_count).speed(1).suffix("次"))
+                                .changed()
+                            {
+                                self.state.set_repeat_count(repeat_count);
+                            }
+                            if ui.add(egui::Button::new("▼").frame(false)).clicked() {
                                 repeat_count = repeat_count.saturating_sub(1);
                                 self.state.set_repeat_count(repeat_count);
                             }
-                            if ui.add(egui::DragValue::new(&mut repeat_count).speed(1)).changed() {
-                                self.state.set_repeat_count(repeat_count);
-                            }
-                            if ui.add(egui::Button::new("+")).clicked() {
+                            if ui.add(egui::Button::new("▲").frame(false)).clicked() {
                                 repeat_count = repeat_count.saturating_add(1);
                                 self.state.set_repeat_count(repeat_count);
                             }
-
-                            ui.label("次");
                         });
                     });
                 } else {
@@ -498,10 +503,10 @@ impl App {
                 let status_text = if self.state.is_playing() {
                     let playback_status = self.state.get_player_playback_status();
                     let progress = playback_status.get_progress();
-                    let mut s = format!("▶ {progress:.0}%");
+                    let mut s = format!("▶ {progress:.1}%");
                     if playback_status.total_repeats > 1 {
                         s += &format!(
-                            " | {}/{} 次",
+                            " | 第 {}/{} 次",
                             playback_status.current_repeat, playback_status.total_repeats
                         );
                     }
@@ -533,7 +538,10 @@ impl App {
         egui::Window::new("快捷键帮助")
             .collapsible(true)
             .resizable(true)
-            .default_size([400.0, 300.0])
+            .default_size([300.0, 300.0])
+            // 居中显示
+            .anchor(egui::Align2::CENTER_TOP, [0.0, 0.0])
+            // .default_pos([(ctx.screen_rect().width() - 300.0) / 2.0, 0.0])
             .show(ctx, |ui| {
                 ui.separator();
 
@@ -544,10 +552,12 @@ impl App {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    ui.colored_label(
-                                        egui::Color32::LIGHT_BLUE,
-                                        shortcut.display_text(),
-                                    );
+                                    let color = if ui.visuals().dark_mode {
+                                        egui::Color32::LIGHT_BLUE
+                                    } else {
+                                        egui::Color32::BLUE
+                                    };
+                                    ui.colored_label(color, shortcut.display_text());
                                 },
                             );
                         });

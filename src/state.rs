@@ -43,7 +43,6 @@ impl AppState {
             Shortcut::new("stop", egui::Key::F4, false, false, false, "停止录制/播放", false),
             Shortcut::new("play_once", egui::Key::F7, false, false, false, "播放一次", false),
             Shortcut::new("play_multiple", egui::Key::F8, false, false, false, "播放多次", false),
-            // Shortcut::new("stop_playback", egui::Key::F9, false, false, false, "停止播放", false),
             Shortcut::new(
                 "clear_recording",
                 egui::Key::Delete,
@@ -129,33 +128,37 @@ impl AppState {
     }
 
     pub fn play_selected_macros(&self, repeat_count: u32) {
-        if self.selected_macros.read().is_empty() {
+        let selected_macros = self.get_selected_macros();
+        let macro_interval_ms = self.get_macro_interval_ms();
+
+        if selected_macros.is_empty() {
             return;
         }
-        self.repaint_ui_after_secs(0.5);
-        let selected_macros = self.selected_macros.read().iter().cloned().collect::<Vec<_>>();
-        self._play_selected_macros(&selected_macros, repeat_count, self.get_macro_interval_ms());
+
+        self._play_selected_macros(
+            &selected_macros.into_iter().collect::<Vec<_>>(),
+            repeat_count,
+            macro_interval_ms,
+        );
+        self.ui_repaint_after_secs(0.2);
     }
 
-    #[inline]
     fn _play_selected_macros(
         &self, selected_macros: &[String], repeat_count: u32, macro_interval_ms: u64,
     ) {
-        // 停止当前播放
-        self.stop_player();
+        let macros_to_play = self.macro_manager.get_macros(selected_macros);
 
-        // 收集选中的宏事件
-        let macros = self.macro_manager.get_macros(selected_macros);
-
-        if !macros.is_empty() {
-            // 创建多宏播放器
-            let multi_player = MacroPlayer::new(macros, macro_interval_ms);
-            multi_player.start_playing_with_repeat(repeat_count);
-            self.set_player(multi_player);
+        if macros_to_play.is_empty() {
+            return;
         }
+
+        let player = MacroPlayer::new(macros_to_play, macro_interval_ms);
+        player.start_playing(repeat_count);
+
+        self.set_player(player);
     }
 
-    pub fn repaint_ui_after_secs(&self, secs: f32) {
+    pub fn ui_repaint_after_secs(&self, secs: f32) {
         self.ui_context.request_repaint_after_secs(secs);
     }
 }

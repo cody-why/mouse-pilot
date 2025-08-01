@@ -1,4 +1,4 @@
-// #![allow(clippy::new_without_default)]
+#![allow(clippy::new_without_default)]
 pub mod event;
 pub mod font;
 pub mod hotkey;

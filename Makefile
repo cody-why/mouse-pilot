@@ -9,5 +9,5 @@ macos:
 fix:
 	cargo fixit --clippy --allow-dirty
 
-svg2icon:
+icon:
 	chmod +x scripts/create_icon.sh && ./scripts/create_icon.sh
