@@ -18,8 +18,7 @@ pub struct MacroRecorder {
     events: Arc<Mutex<Vec<MacroEvent>>>,
     is_recording: Arc<AtomicBool>,
     start_time: Arc<Mutex<Option<Instant>>>,
-    last_mouse_pos: Arc<Mutex<(i32, i32)>>,
-    // 异步任务管理
+    // last_mouse_pos: Arc<Mutex<(i32, i32)>>,
     recording_task: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     shortcuts: Arc<Vec<Shortcut>>,
     click_time: Arc<Mutex<Option<Instant>>>,
@@ -31,7 +30,7 @@ impl MacroRecorder {
             events: Arc::new(Mutex::new(Vec::new())),
             is_recording: Arc::new(AtomicBool::new(false)),
             start_time: Arc::new(Mutex::new(None)),
-            last_mouse_pos: Arc::new(Mutex::new((0, 0))),
+            // last_mouse_pos: Arc::new(Mutex::new((0, 0))),
             recording_task: Arc::new(Mutex::new(None)),
             shortcuts,
             click_time: Arc::new(Mutex::new(None)),
@@ -68,17 +67,20 @@ impl MacroRecorder {
         while is_recording.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(10));
 
-            const MIN_DIST: i32 = 8;
-            let lastpos = *self.last_mouse_pos.lock();
+            // const MIN_DIST: i32 = 8;
+            // let lastpos = *self.last_mouse_pos.lock();
 
             // 监听鼠标事件
             let mouse_state = device_state.get_mouse();
+            if mouse_state.coords != last_mouse_state.coords {
+                self.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
+            }
 
             // 监听鼠标点击
             if mouse_state.button_pressed != last_mouse_state.button_pressed {
-                if mouse_state.coords != lastpos {
-                    self.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
-                }
+                // if mouse_state.coords != last_mouse_state.coords {
+                //     self.add_mouse_move(mouse_state.coords.0, mouse_state.coords.1);
+                // }
                 for (i, pressed) in mouse_state.button_pressed.iter().enumerate() {
                     if *pressed {
                         self.add_mouse_click(Button::from(i), true);
@@ -86,12 +88,13 @@ impl MacroRecorder {
                         self.add_mouse_click(Button::from(i), false);
                     }
                 }
-            } else {
-                let (cur_x, cur_y) = mouse_state.coords;
-                if (cur_x - lastpos.0).abs() >= MIN_DIST || (cur_y - lastpos.1).abs() >= MIN_DIST {
-                    self.add_mouse_move(cur_x, cur_y);
-                }
             }
+            // } else {
+            //     let (cur_x, cur_y) = mouse_state.coords;
+            //     if (cur_x - lastpos.0).abs() >= MIN_DIST || (cur_y - lastpos.1).abs() >= MIN_DIST {
+            //         self.add_mouse_move(cur_x, cur_y);
+            //     }
+            // }
 
             // 监听键盘事件
             let keys = device_state.get_keys();
@@ -152,7 +155,7 @@ impl MacroRecorder {
             timestamp: elapsed as u128,
         };
         self.events.lock().push(event);
-        *self.last_mouse_pos.lock() = (x, y);
+        // *self.last_mouse_pos.lock() = (x, y);
     }
 
     pub fn add_mouse_click(&self, button: Button, pressed: bool) {
