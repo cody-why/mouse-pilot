@@ -16,10 +16,10 @@
 ```bash
 # 克隆项目
 git clone <repository-url>
-cd mouse-pilot
 
 # 编译项目
-cargo build --release
+make win # 编译windows版本
+make macos # 编译macos版本
 
 # 运行应用
 cargo run

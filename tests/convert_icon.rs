@@ -1,12 +1,17 @@
 #[cfg(test)]
 mod tests {
     use image::ImageReader;
-    use std::fs;
+    use std::{fs, path::Path};
     // 转换 icon 图片为 Rust 代码, 避免引入 image 依赖
     #[test]
+    #[ignore]
     fn convert_icon() {
         let input_path = "assets/icon.png";
         let output_path = "src/icon_data.rs";
+        if !Path::new(input_path).exists() {
+            return;
+        }
+
         // 读取并转换图片
         let img = ImageReader::open(input_path).unwrap().decode().unwrap().into_rgba8();
 
