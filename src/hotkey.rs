@@ -147,9 +147,11 @@ impl GlobalHotkeyListener {
     fn run_listener_loop(running: Arc<AtomicBool>, state: Arc<AppState>) {
         let device_state = DeviceState::new();
         let mut last_keys = Vec::new();
+        let mut last_mouse_pos = (0, 0);
+        let mut sum_time = 0;
 
         while running.load(Ordering::SeqCst) {
-            thread::sleep(std::time::Duration::from_millis(10));
+            thread::sleep(std::time::Duration::from_millis(30));
 
             let keys = device_state.get_keys();
             if keys != last_keys {
@@ -165,6 +167,18 @@ impl GlobalHotkeyListener {
                     }
                 }
                 last_keys = keys;
+            }
+
+            sum_time = (sum_time + 1) % 6;
+            if sum_time > 0 {
+                continue;
+            }
+            // 更新鼠标位置
+            let mouse_state = device_state.get_mouse();
+            if mouse_state.coords != last_mouse_pos {
+                state.set_mouse_position(mouse_state.coords);
+                last_mouse_pos = mouse_state.coords;
+                state.ui_repaint_after_secs(0.4);
             }
         }
     }

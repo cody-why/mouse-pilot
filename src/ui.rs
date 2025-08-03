@@ -482,7 +482,7 @@ impl App {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let total_macros = self.state.macro_manager.get_macro_count();
-                ui.label(format!("宏数量: {total_macros}"));
+                ui.label(format!("📦 {total_macros}"));
 
                 // 录制状态
                 if self.state.recorder.is_recording() {
@@ -525,6 +525,12 @@ impl App {
                     String::from("⏹ 未播放")
                 };
                 ui.label(status_text);
+
+                ui.separator();
+
+                // 显示鼠标位置
+                let mouse_pos = self.state.get_mouse_position();
+                ui.label(format!("🖱 ({}, {})", mouse_pos.0, mouse_pos.1));
 
                 ui.separator();
 

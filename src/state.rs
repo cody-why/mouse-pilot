@@ -19,6 +19,7 @@ pub struct AppState {
     pub macro_interval_ms: Mutex<u64>,
     pub shortcuts: Arc<Vec<Shortcut>>,
     pub ui_context: egui::Context,
+    pub mouse_position: Mutex<(i32, i32)>,
 }
 
 impl AppState {
@@ -33,6 +34,7 @@ impl AppState {
             macro_interval_ms: Mutex::new(0),
             shortcuts,
             ui_context: ctx.clone(),
+            mouse_position: Mutex::new((0, 0)),
         }
     }
 
@@ -160,5 +162,13 @@ impl AppState {
 
     pub fn ui_repaint_after_secs(&self, secs: f32) {
         self.ui_context.request_repaint_after_secs(secs);
+    }
+
+    pub fn get_mouse_position(&self) -> (i32, i32) {
+        *self.mouse_position.lock()
+    }
+
+    pub fn set_mouse_position(&self, position: (i32, i32)) {
+        *self.mouse_position.lock() = position;
     }
 }
